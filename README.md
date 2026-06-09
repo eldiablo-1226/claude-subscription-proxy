@@ -1,154 +1,233 @@
-# Claude Subscription Proxy
+<h1 align="center">Claude Subscription Proxy</h1>
 
-A small Tauri 2 desktop app that runs a **local HTTP server** exposing your Claude
-Code **subscription** (Pro / Max) as both an **OpenAI-compatible**
-(`/v1/chat/completions`) and **Anthropic-compatible** (`/v1/messages`) API. Other
-tools on your LAN point at the proxy, send a proxy-issued key, and their traffic
-is billed against your subscription instead of a metered API key.
+<p align="center">
+  <strong>Serve your Claude Code Pro / Max plan as an OpenAI- and Anthropic-compatible local API.</strong>
+</p>
 
-The proxy never forwards raw OAuth tokens. It runs every request through the real
-[`claude`](https://docs.claude.com) CLI in headless mode
-(`claude -p --output-format stream-json`), so Claude Code itself makes the
-upstream call under your authenticated session.
+<p align="center">
+  <img alt="Tauri 2" src="https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white">
+  <img alt="Rust" src="https://img.shields.io/badge/Rust-backend-CE412B?logo=rust&logoColor=white">
+  <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-frontend-3178C6?logo=typescript&logoColor=white">
+  <img alt="Platform" src="https://img.shields.io/badge/platform-macOS%20%C2%B7%20Linux%20%C2%B7%20Windows-555">
+</p>
+
+<p align="center">
+  <img alt="Claude Subscription Proxy dashboard" src="docs/screenshots/dashboard.png" width="820">
+</p>
+
+A small desktop app that runs a local HTTP server exposing your **Claude Code subscription**
+as both an **OpenAI-compatible** (`/v1/chat/completions`) and **Anthropic-compatible**
+(`/v1/messages`) API. Point any tool that speaks those APIs at the proxy, hand it a
+proxy-issued key, and its traffic is billed against your **Pro / Max plan** instead of a
+metered API key.
+
+The proxy never forwards OAuth tokens or API keys. It runs every request through the real
+[`claude`](https://docs.claude.com/en/docs/claude-code) CLI in **isolated headless mode**
+(`claude -p --output-format stream-json`), so Claude Code itself makes the upstream call
+under your authenticated session.
+
+> [!IMPORTANT]
+> Using a subscription for programmatic/headless access is your responsibility under
+> Anthropic's terms. See [Subscription, credits & policy](#subscription-credits--policy).
+
+---
+
+## Features
+
+- **Two API surfaces from one proxy** — OpenAI `/v1/chat/completions`, Anthropic
+  `/v1/messages`, plus `GET /v1/models`. Both support **streaming (SSE)** and
+  non-streaming.
+- **Subscription-backed** — wraps the real `claude` CLI; no token forwarding, no metered
+  API key.
+- **LAN-ready, key-gated** — binds `0.0.0.0` and requires a proxy API key on every request.
+  Keys are generated in the GUI, stored only as SHA-256 hashes, and shown once.
+- **Clean responses** — runs the CLI with `--setting-sources ""` and `--strict-mcp-config`,
+  so your personal hooks, output styles, and MCP servers never leak into proxied output.
+- **Live server status** — uptime, total requests served, and in-flight concurrency.
+- **Subscription limits** — surfaces the rate-limit window the CLI reports (type, reset
+  countdown, overage), with an on-demand **Check now**.
+- **Model mapping** — map client model names (`gpt-4o`, `gpt-4o-mini`, …) to Claude models
+  (`opus`, `sonnet`, `haiku`); `claude*` names pass through.
+- **Request log** — live tail of the last 500 requests with status, latency, and token
+  counts.
+
+<p align="center">
+  <img alt="Server status and subscription limits" src="docs/screenshots/status-cards.png" width="820">
+</p>
+
+## How it works
+
+```
+client (OpenAI/Anthropic SDK)
+      │  HTTP + proxy API key
+      ▼
+┌─────────────────────────────┐
+│  Tauri app (Rust + axum)     │
+│  • auth gate (Bearer/x-api)  │
+│  • flatten messages → prompt │
+│  • spawn `claude -p …`       │──►  claude CLI ──►  Anthropic (your subscription)
+│  • parse stream-json (NDJSON)│
+│  • translate → OpenAI / pass │
+│    through Anthropic events  │
+└─────────────────────────────┘
+```
+
+Each request spawns one `claude` process in a per-request scratch directory with
+`--tools "" --max-turns 1 --no-session-persistence` (no project tools, no agentic
+behavior), bounded by a request timeout and a process-wide concurrency semaphore. System
+text is routed through `--append-system-prompt` (preserving the "You are Claude Code"
+identity); prior turns are streamed to the child's stdin. Anthropic mode re-emits the
+CLI's own stream events verbatim; OpenAI mode translates them.
 
 ## Prerequisites
 
-- **Claude Code** installed and on `PATH`. Verify with `claude --version`.
-- A **Pro / Max subscription** account that supports headless CLI calls.
-  Confirm with:
+- **[Claude Code](https://docs.claude.com/en/docs/claude-code) installed** and on `PATH`
+  (`claude --version`).
+- A **Pro / Max subscription**, logged in:
   ```bash
-  claude auth status    # must exit 0; the GUI also surfaces this
+  claude auth status   # must exit 0; the app surfaces this too
+  claude auth login    # if not logged in
   ```
-  If `claude auth status` exits non-zero, run `claude auth login` once to
-  authenticate, then reopen the app and click **Recheck**.
-- **Node 20+** and **Rust stable** with the Tauri 2 prerequisites
+- **Node 20+** and **Rust (stable)** with the
+  [Tauri 2 prerequisites](https://tauri.app/start/prerequisites/) for your OS
   (Xcode CLT on macOS, `webkit2gtk` on Linux, MSVC + WebView2 on Windows).
 
-## Build & run
+## Quick start
 
 ```bash
 npm install
-npm run tauri dev          # launch the desktop app (debug)
-npm run tauri build        # produce a release bundle for your platform
+npm run tauri dev      # launch the app (debug)
+npm run tauri build    # build a release bundle
 ```
 
-The first launch creates `config.json` and `keys.json` in your platform's app
-config dir (`~/Library/Application Support/dev.local.claude-subscription-proxy`
-on macOS) and a `scratch/` working dir under app data.
+> [!NOTE]
+> Use **`npm run tauri build`** (or `npx tauri build`) — there is no global `tauri`
+> binary, so a bare `tauri build` will fail with `command not found`.
 
-## Pointing a client at the proxy
+First launch creates `config.json` and `keys.json` in your platform's app-config dir and
+an empty `scratch/` working dir under app-data.
 
-Once the server is **Running** at, e.g. `http://192.168.1.10:8787`:
+## Connecting a client
 
-### OpenAI-compatible client
+Start the server in the app, then create a key and copy it (shown once).
+
+<p align="center">
+  <img alt="Create API key dialog" src="docs/screenshots/create-key.png" width="640">
+</p>
+
+### OpenAI-compatible
 
 ```bash
-curl http://192.168.1.10:8787/v1/chat/completions \
+curl http://192.168.1.24:8787/v1/chat/completions \
   -H "Authorization: Bearer csp-<your-key>" \
   -H "Content-Type: application/json" \
   -d '{"model":"gpt-4o","messages":[{"role":"user","content":"Reply with exactly: OK"}]}'
 ```
 
 - `base_url`: `http://<host>:8787/v1`
-- Auth: send the proxy key as the OpenAI key (`Authorization: Bearer …` or
-  `x-api-key`). The proxy verifies against a local store of sha256 hashes — the
-  raw key is shown to you exactly once at creation time.
-- Model strings are mapped to Claude equivalents by the `Config → Model map`
-  field. The default map is `gpt-4o → opus`, `gpt-4o-mini → haiku`,
-  `gpt-4 → opus`, `gpt-3.5-turbo → haiku`. Any name starting with `claude` is
-  passed through untouched.
-- Sampling params (`temperature`, `top_p`, `max_tokens`, `n`, …) are accepted
-  and silently ignored — the `claude` CLI exposes no equivalent knobs.
+- Auth: send the proxy key as the OpenAI key (`Authorization: Bearer …` or `x-api-key`).
+- Add `"stream": true` for SSE (`chat.completion.chunk` … `data: [DONE]`).
+- Sampling params (`temperature`, `top_p`, `max_tokens`, …) are accepted and ignored — the
+  CLI exposes no equivalent knobs.
 
-### Anthropic-compatible client
+### Anthropic-compatible
 
 ```bash
-curl http://192.168.1.10:8787/v1/messages \
+curl http://192.168.1.24:8787/v1/messages \
   -H "x-api-key: csp-<your-key>" \
   -H "anthropic-version: 2023-06-01" \
   -H "Content-Type: application/json" \
-  -d '{"model":"claude-sonnet-4-5","max_tokens":50,"messages":[{"role":"user","content":"Reply with exactly: OK"}]}'
+  -d '{"model":"claude-sonnet-4-5","max_tokens":64,"messages":[{"role":"user","content":"Reply with exactly: OK"}]}'
 ```
 
-- `base_url`: `http://<host>:8787` (the SDK's own `/v1/messages` is appended)
-- Auth: `x-api-key: <proxy key>` (or `Authorization: Bearer …`).
-- Anthropic mode **passes through** the CLI's own stream events, so SSE clients
-  see `message_start` → `content_block_*` → `message_delta` → `message_stop`
-  with the message `id` and `model` rewritten to your locally generated ids.
+- `base_url`: `http://<host>:8787` (the SDK appends `/v1/messages`).
+- With `"stream": true`, the proxy re-emits the native Anthropic event stream
+  (`message_start` → `content_block_delta` → … → `message_stop`).
 
 ### Endpoints
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET`  | `/v1/models` | Lists Claude models plus your model map keys. |
-| `POST` | `/v1/chat/completions` | OpenAI shape, non-streaming + SSE. |
-| `POST` | `/v1/messages` | Anthropic shape, non-streaming + SSE passthrough. |
+| `GET`  | `/v1/models` | Claude models ∪ your model-map keys. |
+| `POST` | `/v1/chat/completions` | OpenAI shape · non-streaming + SSE. |
+| `POST` | `/v1/messages` | Anthropic shape · non-streaming + SSE passthrough. |
 
-## What the proxy does (and does not)
+## Configuration
 
-- **Spawns** `claude -p "<final user message>" --output-format stream-json` once
-  per request, in a per-request scratch dir with `--tools ""` and
-  `--max-turns 1`. Project tools and agents are intentionally unreachable.
-- **Isolates** from your personal Claude config via `--setting-sources ""` and
-  `--strict-mcp-config`: the proxy loads no user/project/local settings, so your
-  own hooks, output styles, and MCP servers never leak into proxied responses.
-- **Flattens** OpenAI / Anthropic `messages` arrays: system text is concatenated
-  and routed to `--append-system-prompt` (the default "You are Claude Code"
-  identity is preserved); prior turns are written to the child's stdin as a
-  transcript. Image and non-text parts are rejected with HTTP 400.
-- **Streams** Anthropic events verbatim; translates to OpenAI `chat.completion.chunk`
-  for the OpenAI shape, ending with `data: [DONE]`.
-- **Caps** total request time at `Config → Timeout seconds` (default 600) and
-  bounds concurrency at `Config → Max concurrency` (default 4) — extra requests
-  wait, not reject.
-- **Does not** touch your auth tokens, does not expose OAuth, does not bypass
-  rate limits.
+Edit in the **Config** panel (stop the server first). Stored at
+`<app-config-dir>/config.json`.
 
-## Subscription, Agent SDK credits, and policy
+| Field | Default | Description |
+|---|---|---|
+| `bind_address` | `0.0.0.0` | Interface to bind (use `127.0.0.1` for local-only). |
+| `port` | `8787` | Listen port. |
+| `claude_binary_path` | `claude` | CLI path (PATH lookup unless absolute). |
+| `default_model` | `sonnet` | Fallback when a model isn't mapped or `claude*`. |
+| `model_map` | `gpt-4o→opus`, `gpt-4o-mini→haiku`, `gpt-4→opus`, `gpt-3.5-turbo→haiku` | Client → Claude model mapping. |
+| `max_concurrency` | `4` | Concurrent `claude` processes (extra requests wait). |
+| `request_timeout_secs` | `600` | Per-request wall-clock budget. |
+| `require_auth` | `true` | Require a proxy API key on every request. |
+| `working_dir` | `<app-data>/scratch` | Empty per-request CWD for the CLI. |
 
-Anthropic disallows raw-token third-party harnesses as of 2026-04-04, which is
-why the proxy uses the official CLI. As of 2026-06-15, headless `claude -p`
-calls on a subscription draw from a **separate monthly "Agent SDK credit"
-pool** rather than your interactive Pro / Max limits. The proxy has no special
-treatment — every call you make through it consumes that pool, and you are
-responsible for staying within Anthropic's subscription terms.
+## Security
 
-## Layout
+- **Proxy keys** are random `csp-…` tokens; only their SHA-256 hash and an 8-char prefix
+  are persisted. The raw key is shown once at creation — copy it then.
+- The proxy binds `0.0.0.0` by default so other machines on your LAN can reach it. Keep
+  `require_auth` on, or set `bind_address` to `127.0.0.1` for local-only use.
+- The proxy does not read, store, or forward your Claude OAuth tokens.
+- Image / non-text request content is rejected with HTTP 400 (text completions only).
 
-- `src-tauri/src/config.rs` — persistent config (`<app_config_dir>/config.json`)
-- `src-tauri/src/keys.rs` — proxy API key store (`<app_config_dir>/keys.json`),
-  sha256-hashed, raw shown once
-- `src-tauri/src/claude_auth.rs` — `claude auth status` parsing + macOS login
-  helper (spawns Terminal via `osascript`)
-- `src-tauri/src/server/claude.rs` — the core: spawns the CLI, parses NDJSON
-  stream-json output, classifies events
-- `src-tauri/src/server/openai.rs` — `/v1/models` + `/v1/chat/completions`
-- `src-tauri/src/server/anthropic.rs` — `/v1/messages` with verbatim event
-  passthrough
-- `src-tauri/src/server/translate.rs` — message-array → `(system, final_user,
-  history_stdin)` flattening
-- `src-tauri/src/server/auth.rs` — bearer / x-api-key middleware
-- `src-tauri/src/commands.rs` — Tauri commands the frontend calls
-- `src/` — vanilla-TS dashboard (panels: Server, Auth, Keys, Config, Logs)
+## Subscription, credits & policy
+
+Anthropic disallows raw-token third-party harnesses (which is why this wraps the official
+CLI rather than forwarding tokens). Headless `claude -p` calls on a subscription draw from
+a **separate monthly "Agent SDK credit" pool** rather than your interactive limits. Every
+request through this proxy — including the **Check now** limits probe — consumes that pool.
+You are responsible for staying within Anthropic's subscription terms.
 
 ## Development
 
 ```bash
-# Backend tests (config, keys, auth, claude runner, translation,
-# OpenAI/Anthropic response shaping, server lifecycle)
+# Rust backend tests (config, keys, auth gate, CLI runner, translation,
+# OpenAI/Anthropic shaping, server lifecycle, metrics/limits, e2e vs real CLI)
 cd src-tauri && cargo test
 
-# Frontend helpers (view-model)
+# Frontend helpers (vitest)
 npm test
 
 # Type-check + production bundle
 npm run build
-
-# End-to-end smoke against a running server
-npm run tauri dev
 ```
+
+### Project layout
+
+```
+src-tauri/src/
+  server/claude.rs      subprocess spawn + NDJSON stream-json parsing (core)
+  server/translate.rs   messages[] → (system, final user, history) flattening
+  server/openai.rs      /v1/models + /v1/chat/completions
+  server/anthropic.rs   /v1/messages (verbatim event passthrough)
+  server/auth.rs        bearer / x-api-key middleware
+  server/state.rs       runtime, metrics, rate-limit snapshot, ring-buffer log
+  server/mod.rs         router + server lifecycle (axum serve, graceful shutdown)
+  config.rs keys.rs     persisted config + SHA-256 key store
+  claude_auth.rs        `claude auth status` + macOS login helper
+  commands.rs           Tauri commands the dashboard invokes
+src/                    vanilla-TS dashboard (Server, Auth, Keys, Config, Limits, Logs)
+```
+
+## Limitations
+
+- **Multi-turn** is reconstructed by flattening prior turns into the prompt (the CLI takes
+  one prompt, not a typed message array).
+- **Sampling params are ignored** — no CLI equivalent.
+- **Login button is macOS-first** (`osascript` opens Terminal for the OAuth flow); on other
+  platforms run `claude auth login` manually.
+- Subscription limits populate after the first proxied request (or via **Check now**) —
+  the CLI only reports them alongside a turn.
 
 ## License
 
-This project is provided as-is, with no warranty. Use of the proxy is governed
-by Anthropic's subscription terms.
+No license is set yet — add a `LICENSE` (e.g. MIT) before publishing publicly. Use of the
+proxy is governed by Anthropic's subscription terms.
