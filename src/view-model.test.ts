@@ -9,6 +9,7 @@ import {
   modelMapToLines,
   parsePositiveInt,
   serverUrl,
+  usageSummary,
 } from "./view-model";
 
 describe("dashboard view model helpers", () => {
@@ -106,5 +107,42 @@ describe("formatResetIn", () => {
   it("formats a future reset relative to now", () => {
     expect(formatResetIn(200 + 3661, 200)).toBe("in 1h 1m");
     expect(formatResetIn(200 + 90, 200)).toBe("in 1m 30s");
+  });
+});
+
+describe("modelMapFromLines edge cases", () => {
+  it("returns an empty map for blank input", () => {
+    expect(modelMapFromLines("")).toEqual({});
+    expect(modelMapFromLines("\n  \n")).toEqual({});
+  });
+
+  it("throws on rows without a key=value separator or with empty sides", () => {
+    expect(() => modelMapFromLines("gpt-4o")).toThrow();
+    expect(() => modelMapFromLines("=opus")).toThrow();
+    expect(() => modelMapFromLines("gpt-4o=")).toThrow();
+  });
+});
+
+describe("usageSummary", () => {
+  it("reads OpenAI and Anthropic token field names", () => {
+    expect(usageSummary({ prompt_tokens: 7, completion_tokens: 2 })).toBe("7 / 2");
+    expect(usageSummary({ input_tokens: 5, output_tokens: 9 })).toBe("5 / 9");
+    expect(usageSummary({ input_tokens: 5 })).toBe("5 / 0");
+  });
+
+  it("returns empty string for missing or non-object usage", () => {
+    expect(usageSummary(null)).toBe("");
+    expect(usageSummary("nope")).toBe("");
+    expect(usageSummary({ other: 1 })).toBe("");
+  });
+});
+
+describe("parsePositiveInt messages", () => {
+  it("describes an upper bound when one is given", () => {
+    expect(() => parsePositiveInt("0", "Port", 65535)).toThrow(/between 1 and 65535/);
+  });
+
+  it("describes an open range when no max is given", () => {
+    expect(() => parsePositiveInt("0", "Concurrency")).toThrow(/1 or greater/);
   });
 });

@@ -144,16 +144,25 @@ pub async fn refresh_subscription_limits(
     state: State<'_, AppState>,
 ) -> Result<Option<RateLimitInfo>, String> {
     let config = Arc::new(state.config.lock().await.clone());
-    let model = config.default_model.clone();
+    // Share the running server's concurrency limiter so the probe counts toward
+    // active requests and waits when the server is saturated; fall back to a
+    // one-off permit when the server is stopped.
+    let semaphore = {
+        let server = state.server.lock().await;
+        server
+            .as_ref()
+            .map(|handle| handle.runtime.semaphore.clone())
+            .unwrap_or_else(|| Arc::new(Semaphore::new(1)))
+    };
     let request = ClaudeRequest {
         final_user_text: "hi".to_string(),
         system_text: None,
         history_stdin: String::new(),
-        mapped_model: model,
+        mapped_model: config.default_model.clone(),
         stream: false,
     };
 
-    let completed = claude::collect(config, Arc::new(Semaphore::new(1)), request)
+    let completed = claude::collect(config, semaphore, request)
         .await
         .map_err(|err| err.client_message())?;
 

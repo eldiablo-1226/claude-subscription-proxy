@@ -70,8 +70,8 @@ export function parsePositiveInt(raw: string, label: string, max?: number): numb
   const value = Number(raw.trim());
   const upperOk = max === undefined || value <= max;
   if (!Number.isInteger(value) || value < 1 || !upperOk) {
-    const ceiling = max === undefined ? "" : ` and ${max}`;
-    throw new Error(`${label} must be a whole number between 1${ceiling}.`);
+    const bound = max === undefined ? "1 or greater" : `between 1 and ${max}`;
+    throw new Error(`${label} must be a whole number ${bound}.`);
   }
   return value;
 }

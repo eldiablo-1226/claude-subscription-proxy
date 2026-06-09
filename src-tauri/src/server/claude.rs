@@ -419,6 +419,8 @@ async fn run_child(
         }
         Err(_elapsed) => {
             let _ = child.start_kill();
+            // Reap the killed child so it cannot linger as a zombie.
+            let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
             if saw_result {
                 Ok(())
             } else {
