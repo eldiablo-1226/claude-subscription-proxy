@@ -53,7 +53,7 @@ pub async fn chat_completions(State(state): State<HttpState>, Json(body): Json<V
     };
 
     if stream {
-        let mut rx = match claude::stream(state.config.clone(), state.semaphore.clone(), claude_request).await {
+        let mut rx = match claude::stream(state.config.clone(), state.runtime.semaphore.clone(), claude_request).await {
             Ok(rx) => rx,
             Err(error) => {
                 return openai_fail(&state, started, Some(model), Some(mapped_model), error.status_code(), error.client_message()).await;
@@ -74,9 +74,12 @@ pub async fn chat_completions(State(state): State<HttpState>, Json(body): Json<V
             }
         }
     } else {
-        match claude::collect(state.config.clone(), state.semaphore.clone(), claude_request).await {
+        match claude::collect(state.config.clone(), state.runtime.semaphore.clone(), claude_request).await {
             Ok(completed) => {
                 let usage = Some(openai_usage(&completed.usage));
+                if let Some(rate_limit) = completed.rate_limit.clone() {
+                    state.set_rate_limit(rate_limit).await;
+                }
                 let response = completion_response(&model, completed);
                 record_openai_log(&state, PATH, Some(model), Some(mapped_model), StatusCode::OK, started, usage).await;
                 Json(response).into_response()
@@ -291,6 +294,9 @@ fn openai_sse_stream(
                     .await;
                     saw_result = true;
                     break;
+                }
+                Ok(ClaudeEvent::RateLimit(info)) => {
+                    state.set_rate_limit(info).await;
                 }
                 _ => {}
             }

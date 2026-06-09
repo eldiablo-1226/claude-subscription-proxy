@@ -113,3 +113,41 @@ export function buildUsageSnippet(url: string): string {
     `  -d '{"model":"claude-sonnet-4-5","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}'`,
   ].join("\n");
 }
+
+export type ServerMetrics = {
+  running: boolean;
+  bind: string;
+  port: number;
+  started_at: number | null;
+  uptime_secs: number;
+  total_requests: number;
+  active_requests: number;
+  max_concurrency: number;
+};
+
+export type RateLimitInfo = {
+  status?: string | null;
+  rate_limit_type?: string | null;
+  resets_at?: number | null;
+  overage_status?: string | null;
+  overage_resets_at?: number | null;
+  is_using_overage?: boolean | null;
+  captured_at: number;
+};
+
+/** Human-readable duration: "45s", "1m 30s", "1h 1m", "1d 1h". */
+export function formatDuration(totalSecs: number): string {
+  const s = Math.max(0, Math.floor(totalSecs));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+  return `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h`;
+}
+
+export const formatUptime = formatDuration;
+
+/** "in 1h 1m" until the reset epoch (seconds), or "now" once it has passed. */
+export function formatResetIn(resetsAtSecs: number, nowSecs: number): string {
+  const diff = resetsAtSecs - nowSecs;
+  return diff <= 0 ? "now" : `in ${formatDuration(diff)}`;
+}

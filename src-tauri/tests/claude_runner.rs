@@ -112,3 +112,16 @@ fn result_is_failure_treats_error_subtype_as_failure() {
     assert!(claude::result_is_failure(false, "error_during_execution"));
     assert!(!claude::result_is_failure(false, "success"));
 }
+
+#[test]
+fn parse_line_extracts_rate_limit_event() {
+    let line = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","rateLimitType":"five_hour","resetsAt":1781022000,"isUsingOverage":false}}"#;
+    let events = claude::parse_line(line);
+    match events.as_slice() {
+        [ClaudeEvent::RateLimit(info)] => {
+            assert_eq!(info["rateLimitType"], "five_hour");
+            assert_eq!(info["resetsAt"], 1781022000_i64);
+        }
+        other => panic!("expected one RateLimit event, got {other:?}"),
+    }
+}

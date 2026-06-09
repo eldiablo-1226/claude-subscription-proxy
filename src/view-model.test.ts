@@ -3,6 +3,8 @@ import {
   appendLogEntry,
   buildUsageSnippet,
   effectiveStatus,
+  formatResetIn,
+  formatUptime,
   modelMapFromLines,
   modelMapToLines,
   parsePositiveInt,
@@ -81,5 +83,28 @@ describe("parsePositiveInt", () => {
     expect(() => parsePositiveInt("abc", "Port", 65535)).toThrow();
     expect(() => parsePositiveInt("70000", "Port", 65535)).toThrow();
     expect(() => parsePositiveInt("1.5", "Concurrency")).toThrow();
+  });
+});
+
+describe("formatUptime", () => {
+  it("formats durations across units", () => {
+    expect(formatUptime(0)).toBe("0s");
+    expect(formatUptime(45)).toBe("45s");
+    expect(formatUptime(90)).toBe("1m 30s");
+    expect(formatUptime(3600)).toBe("1h 0m");
+    expect(formatUptime(3661)).toBe("1h 1m");
+    expect(formatUptime(90061)).toBe("1d 1h");
+  });
+});
+
+describe("formatResetIn", () => {
+  it("returns 'now' when the reset moment has passed", () => {
+    expect(formatResetIn(100, 200)).toBe("now");
+    expect(formatResetIn(200, 200)).toBe("now");
+  });
+
+  it("formats a future reset relative to now", () => {
+    expect(formatResetIn(200 + 3661, 200)).toBe("in 1h 1m");
+    expect(formatResetIn(200 + 90, 200)).toBe("in 1m 30s");
   });
 });

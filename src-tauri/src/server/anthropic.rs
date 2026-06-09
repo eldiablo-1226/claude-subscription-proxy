@@ -49,7 +49,7 @@ pub async fn messages(State(state): State<HttpState>, Json(body): Json<Value>) -
     let message_id = format!("msg_{}", Uuid::new_v4().simple());
 
     if stream {
-        let mut rx = match claude::stream(state.config.clone(), state.semaphore.clone(), claude_request).await {
+        let mut rx = match claude::stream(state.config.clone(), state.runtime.semaphore.clone(), claude_request).await {
             Ok(rx) => rx,
             Err(error) => {
                 return anthropic_fail(&state, started, Some(model), Some(mapped_model), error.status_code(), "api_error", error.client_message()).await;
@@ -70,9 +70,12 @@ pub async fn messages(State(state): State<HttpState>, Json(body): Json<Value>) -
             }
         }
     } else {
-        match claude::collect(state.config.clone(), state.semaphore.clone(), claude_request).await {
+        match claude::collect(state.config.clone(), state.runtime.semaphore.clone(), claude_request).await {
             Ok(completed) => {
                 let usage = Some(completed.usage.clone());
+                if let Some(rate_limit) = completed.rate_limit.clone() {
+                    state.set_rate_limit(rate_limit).await;
+                }
                 let response = message_response(&model, &message_id, completed);
                 record_anthropic_log(&state, Some(model), Some(mapped_model), StatusCode::OK, started, usage).await;
                 Json(response).into_response()
@@ -237,6 +240,9 @@ fn anthropic_sse_stream(
                     )
                     .await;
                     break;
+                }
+                Ok(ClaudeEvent::RateLimit(info)) => {
+                    state.set_rate_limit(info).await;
                 }
                 _ => {}
             }

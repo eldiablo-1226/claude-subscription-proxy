@@ -45,11 +45,17 @@
             </div>
           </div>
           <p class="url" id="server-url">http://0.0.0.0:8787</p>
+          <dl class="metrics">
+            <div><dt>Uptime</dt><dd id="metric-uptime">—</dd></div>
+            <div><dt>Requests</dt><dd id="metric-total">0</dd></div>
+            <div><dt>Active</dt><dd id="metric-active">0 / 0</dd></div>
+          </dl>
           <div class="actions">
             <button id="start-server">Start</button>
             <button id="stop-server" class="secondary">Stop</button>
           </div>
           <p id="server-error" class="msg error" role="alert"></p>
+          <p id="metrics-error" class="msg error" role="alert"></p>
         </article>
 
         <article class="card" aria-labelledby="auth-heading">
@@ -69,6 +75,22 @@
             <button id="recheck-auth" class="secondary">Recheck</button>
           </div>
           <p id="auth-error" class="msg error" role="alert"></p>
+        </article>
+
+        <article class="card empty" id="limits-card" aria-labelledby="limits-heading">
+          <div class="card-head">
+            <div>
+              <h2 id="limits-heading">Subscription limits</h2>
+              <p class="sub">Rate-limit window the CLI last reported.</p>
+            </div>
+            <span id="limits-pill" class="pill muted">—</span>
+          </div>
+          <dl class="facts">
+            <div><dt>Window</dt><dd id="limit-window">—</dd></div>
+            <div><dt>Resets</dt><dd id="limit-resets">—</dd></div>
+            <div><dt>Overage</dt><dd id="limit-overage">—</dd></div>
+          </dl>
+          <p id="limits-note" class="msg hint">No data yet — limits populate after the first proxied request.</p>
         </article>
       </section>
 

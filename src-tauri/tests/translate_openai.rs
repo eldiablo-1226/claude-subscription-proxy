@@ -77,6 +77,7 @@ fn completion_response_maps_usage_and_finish_reason() {
         stop_reason: Some("max_tokens".to_string()),
         assistant: None,
         subtype: "success".to_string(),
+        rate_limit: None,
     };
 
     let response = openai::completion_response("gpt-4o", completed);

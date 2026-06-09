@@ -51,6 +51,7 @@ fn anthropic_response_prefers_assistant_message_with_rewritten_id_and_model() {
             "usage": { "input_tokens": 1, "output_tokens": 2 }
         })),
         subtype: "success".to_string(),
+        rate_limit: None,
     };
 
     let response = anthropic::message_response("claude-sonnet-4-5", "msg_local", completed);
@@ -68,6 +69,7 @@ fn anthropic_response_synthesizes_when_assistant_missing() {
         stop_reason: Some("end_turn".to_string()),
         assistant: None,
         subtype: "success".to_string(),
+        rate_limit: None,
     };
 
     let response = anthropic::message_response("claude-sonnet-4-5", "msg_local", completed);

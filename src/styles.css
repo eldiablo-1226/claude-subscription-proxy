@@ -199,6 +199,12 @@ button.small { font-size: 0.8rem; padding: 5px 12px; }
 .facts dt { color: var(--muted); font-size: 0.7rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
 .facts dd { font-family: var(--font-display); font-size: 1.12rem; font-weight: 600; margin: 4px 0 0; overflow-wrap: anywhere; }
 
+.metrics { display: grid; gap: 10px; grid-template-columns: repeat(3, 1fr); margin: 0 0 16px; }
+.metrics div { background: var(--surface-soft); border-radius: var(--r-md); padding: 10px 12px; }
+.metrics dt { color: var(--muted); font-size: 0.66rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
+.metrics dd { font-family: var(--font-display); font-size: 1.18rem; font-weight: 600; margin: 3px 0 0; }
+.card.empty .facts dd { color: var(--muted-soft); }
+
 /* ===== Forms ===== */
 .form-grid { display: grid; gap: 16px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 label {

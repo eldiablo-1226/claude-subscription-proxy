@@ -13,7 +13,7 @@ use serde_json::Value;
 use tauri_app_lib::{
     config::Config,
     keys::KeyStore,
-    server::{self, state::HttpState},
+    server::{self, state::{HttpState, ServerRuntime}},
 };
 use tokio::sync::{mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
@@ -75,7 +75,8 @@ async fn start_server() -> Option<RunningServer> {
     let state = HttpState {
         config: Arc::new(config.clone()),
         keys: Arc::new(Mutex::new(keys)),
-        semaphore: Arc::new(tokio::sync::Semaphore::new(config.max_concurrency)),
+        runtime: ServerRuntime::new(config.max_concurrency),
+        rate_limit: Arc::new(Mutex::new(None)),
         logs: Arc::new(Mutex::new(VecDeque::new())),
         app: None,
     };

@@ -5,7 +5,10 @@ use crate::{
     claude_auth::{self, ClaudeAuthStatus},
     config::Config,
     keys::KeyInfo,
-    server::{self, state::{AppState, RequestLogEntry}},
+    server::{
+        self,
+        state::{AppState, RateLimitInfo, RequestLogEntry, ServerMetrics},
+    },
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -53,7 +56,14 @@ pub async fn start_server(app: AppHandle, state: State<'_, AppState>) -> Result<
     }
 
     let config = state.config.lock().await.clone();
-    let handle = server::start(app.clone(), config, state.keys.clone(), state.logs.clone()).await?;
+    let handle = server::start(
+        app.clone(),
+        config,
+        state.keys.clone(),
+        state.logs.clone(),
+        state.rate_limit.clone(),
+    )
+    .await?;
     {
         let mut server = state.server.lock().await;
         *server = Some(handle);
@@ -109,4 +119,14 @@ pub async fn start_claude_login(state: State<'_, AppState>) -> Result<(), String
 #[tauri::command]
 pub async fn get_logs(state: State<'_, AppState>) -> Result<Vec<RequestLogEntry>, String> {
     Ok(state.logs.lock().await.iter().cloned().collect())
+}
+
+#[tauri::command]
+pub async fn get_server_metrics(state: State<'_, AppState>) -> Result<ServerMetrics, String> {
+    Ok(state.server_metrics().await)
+}
+
+#[tauri::command]
+pub async fn get_subscription_limits(state: State<'_, AppState>) -> Result<Option<RateLimitInfo>, String> {
+    Ok(state.rate_limit.lock().await.clone())
 }

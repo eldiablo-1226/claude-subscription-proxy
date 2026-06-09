@@ -8,9 +8,9 @@ use serde_json::Value;
 use tauri_app_lib::{
     config::Config,
     keys::KeyStore,
-    server::{self, state::{HttpState, RequestLogEntry}},
+    server::{self, state::{HttpState, RequestLogEntry, ServerRuntime}},
 };
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::Mutex;
 use tower::ServiceExt;
 
 fn test_state(keys: KeyStore) -> HttpState {
@@ -18,7 +18,8 @@ fn test_state(keys: KeyStore) -> HttpState {
     HttpState {
         config: Arc::new(config),
         keys: Arc::new(Mutex::new(keys)),
-        semaphore: Arc::new(Semaphore::new(4)),
+        runtime: ServerRuntime::new(4),
+        rate_limit: Arc::new(Mutex::new(None)),
         logs: Arc::new(Mutex::new(VecDeque::new())),
         app: None,
     }

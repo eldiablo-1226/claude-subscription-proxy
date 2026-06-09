@@ -4,12 +4,16 @@ import {
   appendLogEntry,
   buildUsageSnippet,
   effectiveStatus,
+  formatResetIn,
   formatTimestamp,
+  formatUptime,
   modelMapFromLines,
   modelMapToLines,
   parsePositiveInt,
+  RateLimitInfo,
   RequestLogEntry,
   serverUrl,
+  ServerMetrics,
   ServerStatus,
   usageSummary,
 } from "./view-model";
@@ -41,11 +45,14 @@ const AUTH_POLL_TIMEOUT_MS = 5 * 60 * 1000;
 
 let config: Config | null = null;
 let serverStatus: ServerStatus | null = null;
+let metrics: ServerMetrics | null = null;
+let limits: RateLimitInfo | null = null;
 let authStatus: ClaudeAuthStatus | null = null;
 let keys: KeyInfo[] = [];
 let logs: RequestLogEntry[] = [];
 let authPoll: number | null = null;
 let authPolling = false;
+let uptimeTick: number | null = null;
 
 const $ = <T extends HTMLElement>(selector: string): T => {
   const element = document.querySelector<T>(selector);
@@ -66,10 +73,19 @@ async function init() {
     serverStatus = event.payload;
     renderServer();
     renderConfigControls();
+    void loadMetrics();
   });
   await listen<RequestLogEntry>("request_log", (event) => {
     logs = appendLogEntry(logs, event.payload);
     renderLogs();
+  });
+  await listen<ServerMetrics>("server_metrics", (event) => {
+    metrics = event.payload;
+    renderMetrics();
+  });
+  await listen<RateLimitInfo>("subscription_limits", (event) => {
+    limits = event.payload;
+    renderLimits();
   });
 
   // Load every panel independently; one failure surfaces in its own panel
@@ -80,6 +96,8 @@ async function init() {
     loadAuthStatus(),
     loadKeys(),
     loadLogs(),
+    loadMetrics(),
+    loadLimits(),
   ]);
 }
 
@@ -156,12 +174,31 @@ async function loadLogs() {
   }
 }
 
+async function loadMetrics() {
+  try {
+    metrics = await invoke<ServerMetrics>("get_server_metrics");
+    renderMetrics();
+  } catch (error) {
+    setText("#metrics-error", `Failed to read server metrics: ${error}`);
+  }
+}
+
+async function loadLimits() {
+  try {
+    limits = await invoke<RateLimitInfo | null>("get_subscription_limits");
+    renderLimits();
+  } catch (error) {
+    setText("#limits-note", `Failed to read subscription limits: ${error}`);
+  }
+}
+
 async function startServer() {
   setText("#server-error", "");
   try {
     serverStatus = await invoke<ServerStatus>("start_server");
     renderServer();
     renderConfigControls();
+    await loadMetrics();
   } catch (error) {
     setText("#server-error", String(error));
   }
@@ -172,6 +209,7 @@ async function stopServer() {
   try {
     await invoke("stop_server");
     await loadServerStatus();
+    await loadMetrics();
   } catch (error) {
     setText("#server-error", String(error));
   }
@@ -289,6 +327,64 @@ function renderServer() {
   setText("#server-url", serverUrl(serverStatus));
   $<HTMLButtonElement>("#start-server").disabled = serverStatus.running;
   $<HTMLButtonElement>("#stop-server").disabled = !serverStatus.running;
+}
+
+function renderMetrics() {
+  if (!metrics) return;
+  const running = metrics.running;
+  setText("#metric-total", String(metrics.total_requests));
+  setText("#metric-active", `${metrics.active_requests} / ${metrics.max_concurrency}`);
+  renderUptime();
+  if (running && metrics.started_at) {
+    startUptimeTick();
+  } else {
+    stopUptimeTick();
+    setText("#metric-uptime", "—");
+  }
+}
+
+function renderUptime() {
+  if (!metrics?.running || !metrics.started_at) {
+    setText("#metric-uptime", "—");
+    return;
+  }
+  const secs = Math.max(0, Math.floor((Date.now() - metrics.started_at) / 1000));
+  setText("#metric-uptime", formatUptime(secs));
+}
+
+function startUptimeTick() {
+  if (uptimeTick !== null) return;
+  uptimeTick = window.setInterval(renderUptime, 1000);
+}
+
+function stopUptimeTick() {
+  if (uptimeTick !== null) {
+    window.clearInterval(uptimeTick);
+    uptimeTick = null;
+  }
+}
+
+function renderLimits() {
+  const card = $("#limits-card");
+  if (!limits) {
+    card.classList.add("empty");
+    setText("#limits-note", "No data yet — limits populate after the first proxied request.");
+    return;
+  }
+  card.classList.remove("empty");
+  const usingOverage = limits.is_using_overage === true;
+  const pill = $("#limits-pill");
+  pill.textContent = usingOverage ? "Using overage" : limits.status ?? "unknown";
+  pill.className = `pill ${usingOverage ? "bad" : limits.status === "allowed" ? "ok" : "muted"}`;
+
+  setText("#limit-window", limits.rate_limit_type ? limits.rate_limit_type.replace(/_/g, " ") : "—");
+  const nowSecs = Math.floor(Date.now() / 1000);
+  setText("#limit-resets", limits.resets_at ? formatResetIn(limits.resets_at, nowSecs) : "—");
+  setText("#limit-overage", limits.overage_status ?? "—");
+  setText(
+    "#limits-note",
+    `As of ${formatTimestamp(limits.captured_at)} · from the latest proxied request.`,
+  );
 }
 
 function renderAuth() {

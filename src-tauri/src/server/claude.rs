@@ -18,6 +18,7 @@ pub enum ClaudeEvent {
     TextDelta(String),
     AnthropicEvent(Value),
     Assistant(Value),
+    RateLimit(Value),
     Result {
         text: String,
         usage: Value,
@@ -44,6 +45,7 @@ pub struct CompletedTurn {
     pub stop_reason: Option<String>,
     pub assistant: Option<Value>,
     pub subtype: String,
+    pub rate_limit: Option<Value>,
 }
 
 #[derive(Debug, Error, Clone, PartialEq)]
@@ -131,10 +133,12 @@ pub async fn collect(
     request.stream = false;
     let mut rx = stream(config, semaphore, request).await?;
     let mut assistant = None;
+    let mut rate_limit = None;
 
     while let Some(event) = rx.recv().await {
         match event? {
             ClaudeEvent::Assistant(message) => assistant = Some(message),
+            ClaudeEvent::RateLimit(info) => rate_limit = Some(info),
             ClaudeEvent::Result {
                 text,
                 usage,
@@ -157,6 +161,7 @@ pub async fn collect(
                     stop_reason,
                     assistant,
                     subtype,
+                    rate_limit,
                 });
             }
             _ => {}
@@ -261,6 +266,12 @@ pub fn parse_sdk_messages(value: Value) -> Result<Vec<ClaudeEvent>, ClaudeError>
             .get("message")
             .cloned()
             .map(ClaudeEvent::Assistant)
+            .into_iter()
+            .collect()),
+        Some("rate_limit_event") => Ok(value
+            .get("rate_limit_info")
+            .cloned()
+            .map(ClaudeEvent::RateLimit)
             .into_iter()
             .collect()),
         Some("result") => Ok(vec![ClaudeEvent::Result {

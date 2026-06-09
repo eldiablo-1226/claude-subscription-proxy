@@ -18,14 +18,13 @@ use tower_http::cors::{Any, CorsLayer};
 
 use crate::{config::Config, keys::KeyStore};
 
-pub use state::RequestLogEntry;
+pub use state::{RateLimitInfo, RequestLogEntry, ServerMetrics, ServerRuntime};
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ServerHandle {
     pub bind: String,
     pub port: u16,
-    #[serde(skip)]
     pub cancel: CancellationToken,
+    pub runtime: Arc<ServerRuntime>,
 }
 
 pub fn router(state: state::HttpState) -> Router {
@@ -46,6 +45,7 @@ pub async fn start(
     config: Config,
     keys: Arc<Mutex<KeyStore>>,
     logs: Arc<Mutex<VecDeque<RequestLogEntry>>>,
+    rate_limit: Arc<Mutex<Option<RateLimitInfo>>>,
 ) -> Result<ServerHandle, String> {
     let address = format!("{}:{}", config.bind_address, config.port);
     let listener = TcpListener::bind(&address)
@@ -53,11 +53,13 @@ pub async fn start(
         .map_err(|err| format!("failed to bind {address}: {err}"))?;
     let local_addr: SocketAddr = listener.local_addr().map_err(|err| err.to_string())?;
     let cancel = CancellationToken::new();
+    let runtime = ServerRuntime::new(config.max_concurrency);
     let http_state = state::HttpState {
-        semaphore: Arc::new(tokio::sync::Semaphore::new(config.max_concurrency)),
+        runtime: runtime.clone(),
         config: Arc::new(config.clone()),
         keys,
         logs,
+        rate_limit,
         app: Some(app),
     };
     let service = router(http_state);
@@ -90,5 +92,6 @@ pub async fn start(
         bind: config.bind_address,
         port: local_addr.port(),
         cancel,
+        runtime,
     })
 }

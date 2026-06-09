@@ -29,6 +29,8 @@ pub fn run() {
             commands::get_claude_auth_status,
             commands::start_claude_login,
             commands::get_logs,
+            commands::get_server_metrics,
+            commands::get_subscription_limits,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
