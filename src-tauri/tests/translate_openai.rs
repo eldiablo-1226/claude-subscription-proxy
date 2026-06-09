@@ -50,6 +50,17 @@ fn flatten_rejects_images_and_non_text_parts() {
 }
 
 #[test]
+fn flatten_rejects_empty_final_user_message() {
+    let messages = json!([
+        {"role":"user","content":""}
+    ]);
+
+    let error = translate::flatten_openai_chat(messages.as_array().unwrap()).unwrap_err();
+
+    assert_eq!(error.message, "the final user message has no text content");
+}
+
+#[test]
 fn resolve_model_uses_map_then_claude_passthrough_then_default() {
     let config = Config::default_for_data_dir("/tmp/csp-data".into());
 
@@ -77,4 +88,22 @@ fn completion_response_maps_usage_and_finish_reason() {
     assert_eq!(response["usage"]["prompt_tokens"], 7);
     assert_eq!(response["usage"]["completion_tokens"], 2);
     assert_eq!(response["usage"]["total_tokens"], 9);
+}
+
+#[test]
+fn models_response_advertises_custom_default_model() {
+    let mut config = Config::default_for_data_dir("/tmp/csp-data".into());
+    config.default_model = "opusplus".to_string();
+
+    let response = openai::models_response(&config);
+    let ids: Vec<&str> = response["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|model| model["id"].as_str().unwrap())
+        .collect();
+
+    assert!(ids.contains(&"opusplus"));
+    assert!(ids.contains(&"gpt-4o"));
+    assert!(ids.contains(&"sonnet"));
 }

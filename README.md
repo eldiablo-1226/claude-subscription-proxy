@@ -89,6 +89,9 @@ curl http://192.168.1.10:8787/v1/messages \
 - **Spawns** `claude -p "<final user message>" --output-format stream-json` once
   per request, in a per-request scratch dir with `--tools ""` and
   `--max-turns 1`. Project tools and agents are intentionally unreachable.
+- **Isolates** from your personal Claude config via `--setting-sources ""` and
+  `--strict-mcp-config`: the proxy loads no user/project/local settings, so your
+  own hooks, output styles, and MCP servers never leak into proxied responses.
 - **Flattens** OpenAI / Anthropic `messages` arrays: system text is concatenated
   and routed to `--append-system-prompt` (the default "You are Claude Code"
   identity is preserved); prior turns are written to the child's stdin as a

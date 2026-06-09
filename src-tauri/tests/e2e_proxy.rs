@@ -73,7 +73,7 @@ async fn start_server() -> Option<RunningServer> {
     let (_, raw) = keys.create("e2e".to_string()).unwrap();
 
     let state = HttpState {
-        config: Arc::new(Mutex::new(config.clone())),
+        config: Arc::new(config.clone()),
         keys: Arc::new(Mutex::new(keys)),
         semaphore: Arc::new(tokio::sync::Semaphore::new(config.max_concurrency)),
         logs: Arc::new(Mutex::new(VecDeque::new())),

@@ -2,9 +2,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
   appendLogEntry,
+  buildUsageSnippet,
+  effectiveStatus,
   formatTimestamp,
   modelMapFromLines,
   modelMapToLines,
+  parsePositiveInt,
   RequestLogEntry,
   serverUrl,
   ServerStatus,
@@ -30,16 +33,11 @@ type ClaudeAuthStatus = {
   raw: unknown;
 };
 
-type KeyInfo = {
-  id: string;
-  label: string;
-  prefix: string;
-  created_at: number;
-};
+type KeyInfo = { id: string; label: string; prefix: string; created_at: number };
+type CreatedKey = KeyInfo & { raw_key: string };
 
-type CreatedKey = KeyInfo & {
-  raw_key: string;
-};
+const AUTH_POLL_MS = 2000;
+const AUTH_POLL_TIMEOUT_MS = 5 * 60 * 1000;
 
 let config: Config | null = null;
 let serverStatus: ServerStatus | null = null;
@@ -47,6 +45,7 @@ let authStatus: ClaudeAuthStatus | null = null;
 let keys: KeyInfo[] = [];
 let logs: RequestLogEntry[] = [];
 let authPoll: number | null = null;
+let authPolling = false;
 
 const $ = <T extends HTMLElement>(selector: string): T => {
   const element = document.querySelector<T>(selector);
@@ -54,62 +53,107 @@ const $ = <T extends HTMLElement>(selector: string): T => {
   return element;
 };
 
-window.addEventListener("DOMContentLoaded", async () => {
+window.addEventListener("DOMContentLoaded", () => {
+  void init();
+});
+
+async function init() {
   wireEvents();
-  await Promise.all([loadConfig(), loadServerStatus(), loadAuthStatus(), loadKeys(), loadLogs()]);
+
+  // Register live listeners BEFORE the initial loads so a single failing load
+  // can never leave the server-status pill or log tail unwired.
   await listen<ServerStatus>("server_status", (event) => {
     serverStatus = event.payload;
     renderServer();
-    renderConfig();
+    renderConfigControls();
   });
   await listen<RequestLogEntry>("request_log", (event) => {
     logs = appendLogEntry(logs, event.payload);
     renderLogs();
   });
-});
+
+  // Load every panel independently; one failure surfaces in its own panel
+  // instead of aborting the rest of init.
+  await Promise.allSettled([
+    loadConfig(),
+    loadServerStatus(),
+    loadAuthStatus(),
+    loadKeys(),
+    loadLogs(),
+  ]);
+}
 
 function wireEvents() {
-  $("#start-server").addEventListener("click", startServer);
-  $("#stop-server").addEventListener("click", stopServer);
-  $("#recheck-auth").addEventListener("click", loadAuthStatus);
-  $("#open-login").addEventListener("click", startLogin);
-  $("#create-key").addEventListener("click", createKey);
-  $("#save-config").addEventListener("click", saveConfig);
-  $("#callout-copy").addEventListener("click", copyUsageSnippet);
-  $("#raw-key-close").addEventListener("click", () => {
-    ($<HTMLDialogElement>("#raw-key-dialog")).close();
-  });
+  $("#start-server").addEventListener("click", () => void startServer());
+  $("#stop-server").addEventListener("click", () => void stopServer());
+  $("#recheck-auth").addEventListener("click", () => void loadAuthStatus());
+  $("#open-login").addEventListener("click", () => void startLogin());
+  $("#create-key").addEventListener("click", () => void createKey());
+  $("#save-config").addEventListener("click", () => void saveConfig());
+  $("#callout-copy").addEventListener("click", () => void copyUsageSnippet());
+  $("#raw-key-close").addEventListener("click", () => $<HTMLDialogElement>("#raw-key-dialog").close());
   $("#copy-raw-key").addEventListener("click", async () => {
-    const rawKey = $("#raw-key").textContent ?? "";
-    await navigator.clipboard.writeText(rawKey);
-    $("#raw-key-copy-status").textContent = "Copied";
+    const raw = $("#raw-key").textContent ?? "";
+    const ok = await copyToClipboard(raw);
+    setText("#raw-key-copy-status", ok ? "Copied to clipboard." : "Copy failed — select the key above and copy it manually.");
   });
+}
+
+async function copyToClipboard(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function loadConfig() {
-  config = await invoke<Config>("get_config");
-  renderConfig();
+  try {
+    config = await invoke<Config>("get_config");
+    renderConfigInputs();
+    renderConfigControls();
+    setText("#config-error", "");
+  } catch (error) {
+    setText("#config-error", `Failed to load config: ${error}`);
+  }
 }
 
 async function loadServerStatus() {
-  serverStatus = await invoke<ServerStatus>("get_server_status");
-  renderServer();
-  renderConfig();
+  try {
+    serverStatus = await invoke<ServerStatus>("get_server_status");
+    renderServer();
+    renderConfigControls();
+  } catch (error) {
+    setText("#server-error", `Failed to read server status: ${error}`);
+  }
 }
 
 async function loadAuthStatus() {
-  authStatus = await invoke<ClaudeAuthStatus>("get_claude_auth_status");
-  renderAuth();
+  try {
+    authStatus = await invoke<ClaudeAuthStatus>("get_claude_auth_status");
+    renderAuth();
+  } catch (error) {
+    setText("#auth-error", `Failed to read Claude auth status: ${error}`);
+  }
 }
 
 async function loadKeys() {
-  keys = await invoke<KeyInfo[]>("list_api_keys");
-  renderKeys();
+  try {
+    keys = await invoke<KeyInfo[]>("list_api_keys");
+    renderKeys();
+  } catch (error) {
+    setText("#keys-error", `Failed to load keys: ${error}`);
+  }
 }
 
 async function loadLogs() {
-  logs = await invoke<RequestLogEntry[]>("get_logs");
-  renderLogs();
+  try {
+    logs = await invoke<RequestLogEntry[]>("get_logs");
+    renderLogs();
+  } catch (error) {
+    setText("#logs-empty", `Failed to load logs: ${error}`);
+  }
 }
 
 async function startServer() {
@@ -117,7 +161,7 @@ async function startServer() {
   try {
     serverStatus = await invoke<ServerStatus>("start_server");
     renderServer();
-    renderConfig();
+    renderConfigControls();
   } catch (error) {
     setText("#server-error", String(error));
   }
@@ -137,72 +181,121 @@ async function startLogin() {
   setText("#auth-error", "");
   try {
     await invoke("start_claude_login");
-    if (authPoll !== null) window.clearInterval(authPoll);
-    authPoll = window.setInterval(async () => {
-      await loadAuthStatus();
-      if (authStatus?.logged_in && authPoll !== null) {
-        window.clearInterval(authPoll);
-        authPoll = null;
-      }
-    }, 2000);
+    startAuthPoll();
   } catch (error) {
     setText("#auth-error", String(error));
   }
 }
 
-async function createKey() {
-  const label = window.prompt("Label for this API key");
-  if (!label?.trim()) return;
+function startAuthPoll() {
+  if (authPoll !== null) window.clearInterval(authPoll);
+  const startedAt = Date.now();
+  authPoll = window.setInterval(async () => {
+    if (authPolling) return; // skip overlapping ticks
+    authPolling = true;
+    try {
+      await loadAuthStatus();
+    } finally {
+      authPolling = false;
+    }
+    if (authStatus?.logged_in || Date.now() - startedAt > AUTH_POLL_TIMEOUT_MS) {
+      stopAuthPoll();
+    }
+  }, AUTH_POLL_MS);
+}
 
-  const created = await invoke<CreatedKey>("create_api_key", { label: label.trim() });
-  await loadKeys();
-  showRawKey(created.raw_key);
+function stopAuthPoll() {
+  if (authPoll !== null) {
+    window.clearInterval(authPoll);
+    authPoll = null;
+  }
+}
+
+async function createKey() {
+  setText("#keys-error", "");
+  const label = window.prompt("Label for this API key (e.g. 'laptop')");
+  if (!label?.trim()) return;
+  try {
+    const created = await invoke<CreatedKey>("create_api_key", { label: label.trim() });
+    await loadKeys();
+    showRawKey(created.raw_key);
+  } catch (error) {
+    setText("#keys-error", `Failed to create key: ${error}`);
+  }
 }
 
 async function revokeKey(id: string) {
-  await invoke("revoke_api_key", { id });
-  await loadKeys();
+  setText("#keys-error", "");
+  try {
+    await invoke("revoke_api_key", { id });
+    await loadKeys();
+  } catch (error) {
+    setText("#keys-error", `Failed to revoke key: ${error}`);
+  }
 }
 
 async function saveConfig() {
   if (!config) return;
   setText("#config-error", "");
+  setText("#config-success", "");
+
+  let next: Config;
   try {
-    const next: Config = {
+    next = {
       ...config,
-      bind_address: ($<HTMLInputElement>("#config-bind")).value.trim(),
-      port: Number(($<HTMLInputElement>("#config-port")).value),
-      claude_binary_path: ($<HTMLInputElement>("#config-claude-path")).value.trim(),
-      default_model: ($<HTMLInputElement>("#config-default-model")).value.trim(),
-      max_concurrency: Number(($<HTMLInputElement>("#config-concurrency")).value),
-      request_timeout_secs: Number(($<HTMLInputElement>("#config-timeout")).value),
-      working_dir: ($<HTMLInputElement>("#config-working-dir")).value.trim(),
-      require_auth: ($<HTMLInputElement>("#config-require-auth")).checked,
-      model_map: modelMapFromLines(($<HTMLTextAreaElement>("#config-model-map")).value),
+      bind_address: $<HTMLInputElement>("#config-bind").value.trim(),
+      claude_binary_path: $<HTMLInputElement>("#config-claude-path").value.trim(),
+      default_model: $<HTMLInputElement>("#config-default-model").value.trim(),
+      working_dir: $<HTMLInputElement>("#config-working-dir").value.trim(),
+      require_auth: $<HTMLInputElement>("#config-require-auth").checked,
+      port: parsePositiveInt($<HTMLInputElement>("#config-port").value, "Port", 65535),
+      max_concurrency: parsePositiveInt($<HTMLInputElement>("#config-concurrency").value, "Max concurrency"),
+      request_timeout_secs: parsePositiveInt($<HTMLInputElement>("#config-timeout").value, "Timeout seconds"),
+      model_map: modelMapFromLines($<HTMLTextAreaElement>("#config-model-map").value),
     };
+    if (!next.bind_address) throw new Error("Bind address is required.");
+    if (!next.claude_binary_path) throw new Error("Claude binary path is required.");
+    if (!next.default_model) throw new Error("Default model is required.");
+  } catch (error) {
+    setText("#config-error", error instanceof Error ? error.message : String(error));
+    return;
+  }
+
+  try {
     await invoke("set_config", { config: next });
     config = next;
-    renderConfig();
-    setText("#config-success", "Saved");
+    renderConfigInputs();
+    setText("#config-success", "Saved.");
   } catch (error) {
-    setText("#config-success", "");
     setText("#config-error", String(error));
   }
 }
 
+async function copyUsageSnippet() {
+  const url = serverUrl(effectiveStatus(serverStatus, config));
+  const ok = await copyToClipboard(buildUsageSnippet(url));
+  const button = $<HTMLButtonElement>("#callout-copy");
+  button.textContent = ok ? "Copied" : "Copy failed";
+  window.setTimeout(() => {
+    button.textContent = "Copy usage snippet";
+  }, 1500);
+}
+
 function renderServer() {
   if (!serverStatus) return;
-  $("#server-pill").textContent = serverStatus.running ? "Running" : "Stopped";
-  $("#server-pill").className = `pill ${serverStatus.running ? "ok" : "muted"}`;
+  const pill = $("#server-pill");
+  pill.textContent = serverStatus.running ? "Running" : "Stopped";
+  pill.className = `pill ${serverStatus.running ? "ok" : "muted"}`;
   setText("#server-url", serverUrl(serverStatus));
-  ($<HTMLButtonElement>("#start-server")).disabled = serverStatus.running;
-  ($<HTMLButtonElement>("#stop-server")).disabled = !serverStatus.running;
+  $<HTMLButtonElement>("#start-server").disabled = serverStatus.running;
+  $<HTMLButtonElement>("#stop-server").disabled = !serverStatus.running;
 }
 
 function renderAuth() {
   if (!authStatus) return;
-  $("#auth-pill").textContent = authStatus.logged_in ? "Logged in" : "Not logged in";
-  $("#auth-pill").className = `pill ${authStatus.logged_in ? "ok" : "bad"}`;
+  const pill = $("#auth-pill");
+  pill.textContent = authStatus.logged_in ? "Logged in" : "Not logged in";
+  pill.className = `pill ${authStatus.logged_in ? "ok" : "bad"}`;
   setText("#auth-account", authStatus.account ?? "Unknown account");
   setText("#auth-plan", authStatus.subscription_type ?? "Unknown plan");
 }
@@ -212,87 +305,70 @@ function renderKeys() {
   body.replaceChildren(
     ...keys.map((key) => {
       const row = document.createElement("tr");
-      row.innerHTML = `<td>${escapeHtml(key.label)}</td><td><code>${escapeHtml(key.prefix)}...</code></td><td>${formatTimestamp(key.created_at)}</td><td></td>`;
+      row.innerHTML = `<td>${escapeHtml(key.label)}</td><td><code>${escapeHtml(key.prefix)}…</code></td><td>${formatTimestamp(key.created_at)}</td><td class="row-action"></td>`;
       const button = document.createElement("button");
       button.textContent = "Revoke";
-      button.className = "danger";
-      button.addEventListener("click", () => revokeKey(key.id));
-      row.lastElementChild?.append(button);
+      button.className = "danger small";
+      button.addEventListener("click", () => void revokeKey(key.id));
+      row.querySelector(".row-action")?.append(button);
       return row;
     }),
   );
+  setText("#keys-empty", keys.length === 0 ? "No keys yet. Create one to let clients authenticate." : "");
 }
 
-function renderConfig() {
+/** Repopulate every input from the saved config. Only call on load/save so a
+ * live server_status event never clobbers the operator's unsaved edits. */
+function renderConfigInputs() {
   if (!config) return;
-  ($<HTMLInputElement>("#config-bind")).value = config.bind_address;
-  ($<HTMLInputElement>("#config-port")).value = String(config.port);
-  ($<HTMLInputElement>("#config-claude-path")).value = config.claude_binary_path;
-  ($<HTMLInputElement>("#config-default-model")).value = config.default_model;
-  ($<HTMLInputElement>("#config-concurrency")).value = String(config.max_concurrency);
-  ($<HTMLInputElement>("#config-timeout")).value = String(config.request_timeout_secs);
-  ($<HTMLInputElement>("#config-working-dir")).value = config.working_dir;
-  ($<HTMLInputElement>("#config-require-auth")).checked = config.require_auth;
-  ($<HTMLTextAreaElement>("#config-model-map")).value = modelMapToLines(config.model_map).join("\n");
+  $<HTMLInputElement>("#config-bind").value = config.bind_address;
+  $<HTMLInputElement>("#config-port").value = String(config.port);
+  $<HTMLInputElement>("#config-claude-path").value = config.claude_binary_path;
+  $<HTMLInputElement>("#config-default-model").value = config.default_model;
+  $<HTMLInputElement>("#config-concurrency").value = String(config.max_concurrency);
+  $<HTMLInputElement>("#config-timeout").value = String(config.request_timeout_secs);
+  $<HTMLInputElement>("#config-working-dir").value = config.working_dir;
+  $<HTMLInputElement>("#config-require-auth").checked = config.require_auth;
+  $<HTMLTextAreaElement>("#config-model-map").value = modelMapToLines(config.model_map).join("\n");
+}
 
+/** Enable/disable Save based purely on server state — no input rewrites. */
+function renderConfigControls() {
   const running = serverStatus?.running ?? false;
-  ($<HTMLButtonElement>("#save-config")).disabled = running;
+  $<HTMLButtonElement>("#save-config").disabled = running;
   setText("#config-hint", running ? "Stop the server before changing config." : "");
 }
 
 function renderLogs() {
   const body = $("#logs-body");
   body.replaceChildren(
-    ...logs.slice().reverse().map((entry) => {
-      const row = document.createElement("tr");
-      row.innerHTML = [
-        `<td>${formatTimestamp(entry.ts)}</td>`,
-        `<td>${escapeHtml(entry.method)}</td>`,
-        `<td>${escapeHtml(entry.path)}</td>`,
-        `<td>${escapeHtml(entry.client_model ?? "")} ${entry.mapped_model ? `→ ${escapeHtml(entry.mapped_model)}` : ""}</td>`,
-        `<td>${entry.status}</td>`,
-        `<td>${entry.duration_ms}</td>`,
-        `<td>${escapeHtml(usageSummary(entry.usage))}</td>`,
-      ].join("");
-      return row;
-    }),
+    ...logs
+      .slice()
+      .reverse()
+      .map((entry) => {
+        const row = document.createElement("tr");
+        const model = entry.mapped_model
+          ? `${escapeHtml(entry.client_model ?? "")} → ${escapeHtml(entry.mapped_model)}`
+          : escapeHtml(entry.client_model ?? "");
+        row.innerHTML = [
+          `<td>${formatTimestamp(entry.ts)}</td>`,
+          `<td>${escapeHtml(entry.method)}</td>`,
+          `<td><code>${escapeHtml(entry.path)}</code></td>`,
+          `<td>${model}</td>`,
+          `<td><span class="status s${Math.floor(entry.status / 100)}">${entry.status}</span></td>`,
+          `<td>${entry.duration_ms}</td>`,
+          `<td>${escapeHtml(usageSummary(entry.usage))}</td>`,
+        ].join("");
+        return row;
+      }),
   );
+  setText("#logs-empty", logs.length === 0 ? "No requests yet." : "");
 }
 
 function showRawKey(rawKey: string) {
   setText("#raw-key", rawKey);
   setText("#raw-key-copy-status", "");
-  ($<HTMLDialogElement>("#raw-key-dialog")).showModal();
-}
-
-async function copyUsageSnippet() {
-  const status = serverStatus ?? config
-    ? { running: false, bind: config?.bind_address ?? "0.0.0.0", port: config?.port ?? 8787 }
-    : { running: false, bind: "0.0.0.0", port: 8787 };
-  const snippet = buildUsageSnippet(serverUrl(status));
-  await navigator.clipboard.writeText(snippet);
-  setText("#callout-copy", "Copied");
-  window.setTimeout(() => {
-    const button = $<HTMLButtonElement>("#callout-copy");
-    if (button) button.textContent = "Copy usage snippet";
-  }, 1500);
-}
-
-function buildUsageSnippet(url: string): string {
-  return [
-    "OpenAI-compatible:",
-    `  curl ${url}/chat/completions \\`,
-    "    -H 'Authorization: Bearer csp-<your-key>' \\",
-    "    -H 'Content-Type: application/json' \\",
-    "    -d '{\"model\":\"gpt-4o\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}'",
-    "",
-    "Anthropic-compatible:",
-    `  curl ${url}/messages \\`,
-    "    -H 'x-api-key: csp-<your-key>' \\",
-    "    -H 'anthropic-version: 2023-06-01' \\",
-    "    -H 'Content-Type: application/json' \\",
-    "    -d '{\"model\":\"claude-sonnet-4-5\",\"max_tokens\":50,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}'",
-  ].join("\n");
+  $<HTMLDialogElement>("#raw-key-dialog").showModal();
 }
 
 function setText(selector: string, value: string) {

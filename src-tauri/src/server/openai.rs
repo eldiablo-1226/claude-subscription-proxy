@@ -7,127 +7,82 @@ use axum::{
     response::{sse::Event, IntoResponse, Response, Sse},
     Json,
 };
-use futures::Stream;
-use serde::Deserialize;
+use futures::{Stream, StreamExt};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::config::Config;
 
 use super::{
-    claude::{self, ClaudeEvent, ClaudeRequest, CompletedTurn},
+    claude::{self, ClaudeError, ClaudeEvent, ClaudeRequest, CompletedTurn},
     state::{epoch_millis, HttpState, RequestLogEntry},
     translate,
 };
 
-#[derive(Debug, Deserialize)]
-pub struct ChatCompletionsRequest {
-    pub model: String,
-    pub messages: Vec<Value>,
-    #[serde(default)]
-    pub stream: bool,
-    #[serde(default)]
-    pub stream_options: Option<StreamOptions>,
-}
+const PATH: &str = "/v1/chat/completions";
 
-#[derive(Debug, Deserialize)]
-pub struct StreamOptions {
-    #[serde(default)]
-    pub include_usage: bool,
-}
-
-pub async fn chat_completions(
-    State(state): State<HttpState>,
-    Json(request): Json<ChatCompletionsRequest>,
-) -> Response {
+pub async fn chat_completions(State(state): State<HttpState>, Json(body): Json<Value>) -> Response {
     let started = Instant::now();
-    let config = state.config.lock().await.clone();
-    let flattened = match translate::flatten_openai_chat(&request.messages) {
+
+    let Some(model) = body.get("model").and_then(Value::as_str).map(ToOwned::to_owned) else {
+        return openai_fail(&state, started, None, None, StatusCode::BAD_REQUEST, "you must provide a model parameter").await;
+    };
+    let Some(messages) = body.get("messages").and_then(Value::as_array) else {
+        return openai_fail(&state, started, Some(model), None, StatusCode::BAD_REQUEST, "you must provide a messages parameter").await;
+    };
+    let stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
+    let include_usage = body
+        .get("stream_options")
+        .and_then(|options| options.get("include_usage"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    let flattened = match translate::flatten_openai_chat(messages) {
         Ok(flattened) => flattened,
         Err(error) => {
-            record_openai_log(
-                &state,
-                "/v1/chat/completions",
-                Some(request.model.clone()),
-                None,
-                StatusCode::BAD_REQUEST,
-                started,
-                None,
-            )
-            .await;
-            return openai_error_response(StatusCode::BAD_REQUEST, error.message);
+            return openai_fail(&state, started, Some(model), None, StatusCode::BAD_REQUEST, error.message).await;
         }
     };
-    let mapped_model = resolve_model(&config, &request.model);
+    let mapped_model = resolve_model(&state.config, &model);
     let claude_request = ClaudeRequest {
         final_user_text: flattened.final_user_text,
         system_text: non_empty(flattened.system_text),
         history_stdin: flattened.history_stdin,
         mapped_model: mapped_model.clone(),
-        stream: request.stream,
+        stream,
     };
 
-    if request.stream {
-        let include_usage = request
-            .stream_options
-            .as_ref()
-            .map(|options| options.include_usage)
-            .unwrap_or(false);
-        match claude::stream(config, state.semaphore.clone(), claude_request).await {
-            Ok(rx) => Sse::new(openai_sse_stream(
-                rx,
-                state,
-                request.model,
-                mapped_model,
-                include_usage,
-                started,
-            ))
-            .into_response(),
+    if stream {
+        let mut rx = match claude::stream(state.config.clone(), state.semaphore.clone(), claude_request).await {
+            Ok(rx) => rx,
             Err(error) => {
-                let status = error.status_code();
-                record_openai_log(
-                    &state,
-                    "/v1/chat/completions",
-                    Some(request.model),
-                    Some(mapped_model),
-                    status,
-                    started,
-                    None,
-                )
-                .await;
-                openai_error_response(status, error.client_message())
+                return openai_fail(&state, started, Some(model), Some(mapped_model), error.status_code(), error.client_message()).await;
+            }
+        };
+        // Peek the first event so a pre-stream failure (e.g. the claude binary
+        // missing) maps to a real HTTP status instead of HTTP 200 + in-band error.
+        match rx.recv().await {
+            Some(Err(error)) => {
+                openai_fail(&state, started, Some(model), Some(mapped_model), error.status_code(), error.client_message()).await
+            }
+            None => {
+                openai_fail(&state, started, Some(model), Some(mapped_model), StatusCode::BAD_GATEWAY, "Claude CLI produced no output").await
+            }
+            Some(first) => {
+                let events = claude::into_event_stream(first, rx);
+                Sse::new(openai_sse_stream(events, state, model, mapped_model, include_usage, started)).into_response()
             }
         }
     } else {
-        match claude::collect(config, state.semaphore.clone(), claude_request).await {
+        match claude::collect(state.config.clone(), state.semaphore.clone(), claude_request).await {
             Ok(completed) => {
                 let usage = Some(openai_usage(&completed.usage));
-                let response = completion_response(&request.model, completed);
-                record_openai_log(
-                    &state,
-                    "/v1/chat/completions",
-                    Some(request.model),
-                    Some(mapped_model),
-                    StatusCode::OK,
-                    started,
-                    usage,
-                )
-                .await;
+                let response = completion_response(&model, completed);
+                record_openai_log(&state, PATH, Some(model), Some(mapped_model), StatusCode::OK, started, usage).await;
                 Json(response).into_response()
             }
             Err(error) => {
-                let status = error.status_code();
-                record_openai_log(
-                    &state,
-                    "/v1/chat/completions",
-                    Some(request.model),
-                    Some(mapped_model),
-                    status,
-                    started,
-                    None,
-                )
-                .await;
-                openai_error_response(status, error.client_message())
+                openai_fail(&state, started, Some(model), Some(mapped_model), error.status_code(), error.client_message()).await
             }
         }
     }
@@ -135,19 +90,32 @@ pub async fn chat_completions(
 
 pub async fn models(State(state): State<HttpState>) -> Response {
     let started = Instant::now();
-    let config = state.config.lock().await.clone();
-    let response = Json(models_response(&config)).into_response();
-    record_openai_log(
-        &state,
-        "/v1/models",
-        None,
-        None,
-        StatusCode::OK,
-        started,
-        None,
-    )
-    .await;
+    let response = Json(models_response(&state.config)).into_response();
+    state
+        .record_log(RequestLogEntry {
+            ts: epoch_millis(),
+            method: "GET".to_string(),
+            path: "/v1/models".to_string(),
+            client_model: None,
+            mapped_model: None,
+            status: StatusCode::OK.as_u16(),
+            duration_ms: started.elapsed().as_millis(),
+            usage: None,
+        })
+        .await;
     response
+}
+
+async fn openai_fail(
+    state: &HttpState,
+    started: Instant,
+    client_model: Option<String>,
+    mapped_model: Option<String>,
+    status: StatusCode,
+    message: impl Into<String>,
+) -> Response {
+    record_openai_log(state, PATH, client_model, mapped_model, status, started, None).await;
+    openai_error_response(status, message)
 }
 
 pub fn resolve_model(config: &Config, requested: &str) -> String {
@@ -181,6 +149,7 @@ pub fn models_response(config: &Config) -> Value {
         "haiku".to_string(),
     ]);
     ids.extend(config.model_map.keys().cloned());
+    ids.insert(config.default_model.clone());
 
     json!({
         "object": "list",
@@ -232,7 +201,7 @@ pub fn openai_usage(usage: &Value) -> Value {
 }
 
 fn openai_sse_stream(
-    mut rx: claude::ClaudeEventReceiver,
+    events: impl Stream<Item = Result<ClaudeEvent, ClaudeError>>,
     state: HttpState,
     requested_model: String,
     mapped_model: String,
@@ -243,17 +212,18 @@ fn openai_sse_stream(
     let created = epoch_seconds();
 
     stream! {
+        futures::pin_mut!(events);
         yield Ok(Event::default().data(openai_chunk(&id, created, &requested_model, json!({ "role": "assistant" }), Value::Null, Value::Null).to_string()));
         let mut saw_result = false;
 
-        while let Some(event) = rx.recv().await {
+        while let Some(event) = events.next().await {
             match event {
                 Ok(ClaudeEvent::TextDelta(text)) => {
                     yield Ok(Event::default().data(openai_chunk(&id, created, &requested_model, json!({ "content": text }), Value::Null, Value::Null).to_string()));
                 }
-                Ok(ClaudeEvent::Result { usage, stop_reason, is_error, text, api_error_status, .. }) => {
+                Ok(ClaudeEvent::Result { usage, stop_reason, is_error, text, api_error_status, subtype }) => {
                     saw_result = true;
-                    if is_error {
+                    if claude::result_is_failure(is_error, &subtype) {
                         let status = StatusCode::from_u16(api_error_status.unwrap_or(StatusCode::BAD_GATEWAY.as_u16()))
                             .unwrap_or(StatusCode::BAD_GATEWAY);
                         yield Ok(Event::default().data(json!({
@@ -385,7 +355,7 @@ async fn record_openai_log(
     state
         .record_log(RequestLogEntry {
             ts: epoch_millis(),
-            method: if path == "/v1/models" { "GET" } else { "POST" }.to_string(),
+            method: "POST".to_string(),
             path: path.to_string(),
             client_model,
             mapped_model,

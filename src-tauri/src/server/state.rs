@@ -9,7 +9,7 @@ use crate::{config::Config, keys::KeyStore};
 
 #[derive(Clone)]
 pub struct HttpState {
-    pub config: Arc<Mutex<Config>>,
+    pub config: Arc<Config>,
     pub keys: Arc<Mutex<KeyStore>>,
     pub semaphore: Arc<Semaphore>,
     pub logs: Arc<Mutex<VecDeque<RequestLogEntry>>>,

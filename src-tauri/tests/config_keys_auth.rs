@@ -74,6 +74,10 @@ fn auth_accepts_bearer_or_x_api_key_headers() {
     let mut api_key = HeaderMap::new();
     api_key.insert("x-api-key", "csp-secret-2".parse().unwrap());
     assert_eq!(auth::presented_key(&api_key).as_deref(), Some("csp-secret-2"));
+
+    let mut lower = HeaderMap::new();
+    lower.insert("authorization", "bearer csp-secret-3".parse().unwrap());
+    assert_eq!(auth::presented_key(&lower).as_deref(), Some("csp-secret-3"));
 }
 
 #[test]

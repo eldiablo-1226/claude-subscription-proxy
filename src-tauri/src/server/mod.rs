@@ -54,23 +54,35 @@ pub async fn start(
     let local_addr: SocketAddr = listener.local_addr().map_err(|err| err.to_string())?;
     let cancel = CancellationToken::new();
     let http_state = state::HttpState {
-        config: Arc::new(Mutex::new(config.clone())),
-        keys,
         semaphore: Arc::new(tokio::sync::Semaphore::new(config.max_concurrency)),
+        config: Arc::new(config.clone()),
+        keys,
         logs,
         app: Some(app),
     };
     let service = router(http_state);
     let shutdown = cancel.clone();
+    let cancel_for_drain = cancel.clone();
 
     tauri::async_runtime::spawn(async move {
-        if let Err(error) = axum::serve(listener, service)
-            .with_graceful_shutdown(async move {
-                shutdown.cancelled().await;
-            })
-            .await
-        {
-            tracing::error!(%error, "proxy server stopped with error");
+        let serve = axum::serve(listener, service).with_graceful_shutdown(async move {
+            shutdown.cancelled().await;
+        });
+        // Bound the post-cancel drain: an in-flight SSE turn could otherwise keep
+        // the listener (and its port) bound for the full request timeout, making a
+        // quick Stop -> Start on the same port fail with EADDRINUSE.
+        tokio::select! {
+            result = serve => {
+                if let Err(error) = result {
+                    tracing::error!(%error, "proxy server stopped with error");
+                }
+            }
+            _ = async {
+                cancel_for_drain.cancelled().await;
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            } => {
+                tracing::warn!("proxy server force-stopped after graceful-shutdown drain deadline");
+            }
         }
     });
 

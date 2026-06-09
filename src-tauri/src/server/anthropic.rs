@@ -7,119 +7,95 @@ use axum::{
     response::{sse::Event, IntoResponse, Response, Sse},
     Json,
 };
-use futures::Stream;
-use serde::Deserialize;
+use futures::{Stream, StreamExt};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::config::Config;
 
 use super::{
-    claude::{self, ClaudeEvent, ClaudeRequest, CompletedTurn},
+    claude::{self, ClaudeError, ClaudeEvent, ClaudeRequest, CompletedTurn},
     state::{epoch_millis, HttpState, RequestLogEntry},
     translate,
 };
 
-#[derive(Debug, Deserialize)]
-pub struct MessagesRequest {
-    pub model: String,
-    #[serde(default)]
-    pub system: Option<Value>,
-    pub messages: Vec<Value>,
-    #[serde(default)]
-    pub stream: bool,
-    #[serde(default)]
-    pub max_tokens: Option<Value>,
-}
+const PATH: &str = "/v1/messages";
 
-pub async fn messages(State(state): State<HttpState>, Json(request): Json<MessagesRequest>) -> Response {
+pub async fn messages(State(state): State<HttpState>, Json(body): Json<Value>) -> Response {
     let started = Instant::now();
-    let _ = &request.max_tokens;
-    let config = state.config.lock().await.clone();
-    let flattened = match translate::flatten_anthropic_messages(
-        &request.messages,
-        request.system.as_ref(),
-    ) {
+
+    let Some(model) = body.get("model").and_then(Value::as_str).map(ToOwned::to_owned) else {
+        return anthropic_fail(&state, started, None, None, StatusCode::BAD_REQUEST, "invalid_request_error", "you must provide a model parameter").await;
+    };
+    let Some(messages) = body.get("messages").and_then(Value::as_array) else {
+        return anthropic_fail(&state, started, Some(model), None, StatusCode::BAD_REQUEST, "invalid_request_error", "you must provide a messages parameter").await;
+    };
+    let stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
+
+    let flattened = match translate::flatten_anthropic_messages(messages, body.get("system")) {
         Ok(flattened) => flattened,
         Err(error) => {
-            record_anthropic_log(
-                &state,
-                Some(request.model.clone()),
-                None,
-                StatusCode::BAD_REQUEST,
-                started,
-                None,
-            )
-            .await;
-            return anthropic_error_response(StatusCode::BAD_REQUEST, "invalid_request_error", error.message);
+            return anthropic_fail(&state, started, Some(model), None, StatusCode::BAD_REQUEST, "invalid_request_error", error.message).await;
         }
     };
-    let mapped_model = resolve_model(&config, &request.model);
+    let mapped_model = resolve_model(&state.config, &model);
     let claude_request = ClaudeRequest {
         final_user_text: flattened.final_user_text,
         system_text: non_empty(flattened.system_text),
         history_stdin: flattened.history_stdin,
         mapped_model: mapped_model.clone(),
-        stream: request.stream,
+        stream,
     };
     let message_id = format!("msg_{}", Uuid::new_v4().simple());
 
-    if request.stream {
-        match claude::stream(config, state.semaphore.clone(), claude_request).await {
-            Ok(rx) => Sse::new(anthropic_sse_stream(
-                rx,
-                state,
-                message_id,
-                request.model,
-                mapped_model,
-                started,
-            ))
-            .into_response(),
+    if stream {
+        let mut rx = match claude::stream(state.config.clone(), state.semaphore.clone(), claude_request).await {
+            Ok(rx) => rx,
             Err(error) => {
-                let status = error.status_code();
-                record_anthropic_log(
-                    &state,
-                    Some(request.model),
-                    Some(mapped_model),
-                    status,
-                    started,
-                    None,
-                )
-                .await;
-                anthropic_error_response(status, "api_error", error.client_message())
+                return anthropic_fail(&state, started, Some(model), Some(mapped_model), error.status_code(), "api_error", error.client_message()).await;
+            }
+        };
+        // Peek the first event so a pre-stream failure maps to a real HTTP
+        // status rather than HTTP 200 with an in-band error event.
+        match rx.recv().await {
+            Some(Err(error)) => {
+                anthropic_fail(&state, started, Some(model), Some(mapped_model), error.status_code(), "api_error", error.client_message()).await
+            }
+            None => {
+                anthropic_fail(&state, started, Some(model), Some(mapped_model), StatusCode::BAD_GATEWAY, "api_error", "Claude CLI produced no output").await
+            }
+            Some(first) => {
+                let events = claude::into_event_stream(first, rx);
+                Sse::new(anthropic_sse_stream(events, state, message_id, model, mapped_model, started)).into_response()
             }
         }
     } else {
-        match claude::collect(config, state.semaphore.clone(), claude_request).await {
+        match claude::collect(state.config.clone(), state.semaphore.clone(), claude_request).await {
             Ok(completed) => {
                 let usage = Some(completed.usage.clone());
-                let response = message_response(&request.model, &message_id, completed);
-                record_anthropic_log(
-                    &state,
-                    Some(request.model),
-                    Some(mapped_model),
-                    StatusCode::OK,
-                    started,
-                    usage,
-                )
-                .await;
+                let response = message_response(&model, &message_id, completed);
+                record_anthropic_log(&state, Some(model), Some(mapped_model), StatusCode::OK, started, usage).await;
                 Json(response).into_response()
             }
             Err(error) => {
-                let status = error.status_code();
-                record_anthropic_log(
-                    &state,
-                    Some(request.model),
-                    Some(mapped_model),
-                    status,
-                    started,
-                    None,
-                )
-                .await;
-                anthropic_error_response(status, "api_error", error.client_message())
+                anthropic_fail(&state, started, Some(model), Some(mapped_model), error.status_code(), "api_error", error.client_message()).await
             }
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn anthropic_fail(
+    state: &HttpState,
+    started: Instant,
+    client_model: Option<String>,
+    mapped_model: Option<String>,
+    status: StatusCode,
+    error_type: &str,
+    message: impl Into<String>,
+) -> Response {
+    record_anthropic_log(state, client_model, mapped_model, status, started, None).await;
+    anthropic_error_response(status, error_type, message)
 }
 
 pub fn resolve_model(config: &Config, requested: &str) -> String {
@@ -179,7 +155,7 @@ pub fn anthropic_error_response(
 }
 
 fn anthropic_sse_stream(
-    mut rx: claude::ClaudeEventReceiver,
+    events: impl Stream<Item = Result<ClaudeEvent, ClaudeError>>,
     state: HttpState,
     message_id: String,
     requested_model: String,
@@ -187,10 +163,11 @@ fn anthropic_sse_stream(
     started: Instant,
 ) -> impl Stream<Item = Result<Event, Infallible>> {
     stream! {
+        futures::pin_mut!(events);
         let mut saw_message_stop = false;
         let mut saw_result = false;
 
-        while let Some(event) = rx.recv().await {
+        while let Some(event) = events.next().await {
             match event {
                 Ok(ClaudeEvent::AnthropicEvent(event)) => {
                     let event = rewrite_message_start(event, &message_id, &requested_model);
@@ -204,9 +181,9 @@ fn anthropic_sse_stream(
                     }
                     yield Ok(Event::default().event(event_type).data(event.to_string()));
                 }
-                Ok(ClaudeEvent::Result { is_error, text, api_error_status, usage, .. }) => {
+                Ok(ClaudeEvent::Result { is_error, text, api_error_status, usage, subtype, .. }) => {
                     saw_result = true;
-                    if is_error {
+                    if claude::result_is_failure(is_error, &subtype) {
                         let status = StatusCode::from_u16(api_error_status.unwrap_or(StatusCode::BAD_GATEWAY.as_u16()))
                             .unwrap_or(StatusCode::BAD_GATEWAY);
                         yield Ok(Event::default().event("error").data(json!({
@@ -310,7 +287,7 @@ async fn record_anthropic_log(
         .record_log(RequestLogEntry {
             ts: epoch_millis(),
             method: "POST".to_string(),
-            path: "/v1/messages".to_string(),
+            path: PATH.to_string(),
             client_model,
             mapped_model,
             status: status.as_u16(),

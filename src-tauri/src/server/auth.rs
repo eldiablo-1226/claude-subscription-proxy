@@ -14,7 +14,7 @@ pub async fn require_api_key(
     next: Next,
 ) -> Response {
     let path = request.uri().path().to_string();
-    let require_auth = state.config.lock().await.require_auth;
+    let require_auth = state.config.require_auth;
     if !require_auth {
         return next.run(request).await;
     }
@@ -60,10 +60,12 @@ fn unauthorized_response(path: &str) -> Response {
 
 fn bearer_key(headers: &HeaderMap) -> Option<String> {
     let value = headers.get(AUTHORIZATION)?.to_str().ok()?.trim();
-    value
-        .strip_prefix("Bearer ")
-        .filter(|key| !key.is_empty())
-        .map(ToOwned::to_owned)
+    let (scheme, token) = value.split_once(' ')?;
+    if !scheme.eq_ignore_ascii_case("bearer") {
+        return None;
+    }
+    let token = token.trim();
+    (!token.is_empty()).then(|| token.to_owned())
 }
 
 fn header_value(headers: &HeaderMap, name: &str) -> Option<String> {

@@ -16,7 +16,7 @@ use tower::ServiceExt;
 fn test_state(keys: KeyStore) -> HttpState {
     let config = Config::default_for_data_dir("/tmp/csp-data".into());
     HttpState {
-        config: Arc::new(Mutex::new(config)),
+        config: Arc::new(config),
         keys: Arc::new(Mutex::new(keys)),
         semaphore: Arc::new(Semaphore::new(4)),
         logs: Arc::new(Mutex::new(VecDeque::new())),
@@ -77,6 +77,59 @@ async fn router_accepts_bearer_key_for_models() {
     assert_eq!(logs[0].method, "GET");
     assert_eq!(logs[0].path, "/v1/models");
     assert_eq!(logs[0].status, 200);
+}
+
+#[tokio::test]
+async fn openai_missing_model_returns_openai_shaped_400() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut keys = KeyStore::load(dir.path().join("keys.json")).unwrap();
+    let (_, raw) = keys.create("client".to_string()).unwrap();
+    let app = server::router(test_state(keys));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/chat/completions")
+                .method("POST")
+                .header("authorization", format!("Bearer {raw}"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"messages":[{"role":"user","content":"hi"}]}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["type"], "invalid_request_error");
+}
+
+#[tokio::test]
+async fn anthropic_missing_model_returns_anthropic_shaped_400() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut keys = KeyStore::load(dir.path().join("keys.json")).unwrap();
+    let (_, raw) = keys.create("client".to_string()).unwrap();
+    let app = server::router(test_state(keys));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/messages")
+                .method("POST")
+                .header("x-api-key", raw)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"messages":[{"role":"user","content":"hi"}]}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["type"], "error");
+    assert_eq!(json["error"]["type"], "invalid_request_error");
 }
 
 #[tokio::test]

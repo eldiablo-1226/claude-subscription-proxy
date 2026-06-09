@@ -61,6 +61,9 @@ fn flatten_messages(
     }
 
     let final_user_text = message_content_text(last)?;
+    if final_user_text.trim().is_empty() {
+        return Err(TranslateError::new("the final user message has no text content"));
+    }
     let mut history = String::new();
     for message in &messages[..messages.len().saturating_sub(1)] {
         let Some(role) = role(message) else {

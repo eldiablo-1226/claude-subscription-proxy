@@ -80,3 +80,35 @@ fn parse_result_and_usage_from_sdk_line() {
         api_error_status: None,
     });
 }
+
+#[test]
+fn build_command_isolates_user_settings_and_hooks() {
+    let config = Config::default_for_data_dir("/tmp/csp-data".into());
+
+    let (_, args) = claude::build_command_parts(&config, "hi", None, "sonnet", false);
+
+    let idx = args
+        .iter()
+        .position(|arg| arg == "--setting-sources")
+        .expect("--setting-sources flag present");
+    assert_eq!(args[idx + 1], "");
+}
+
+#[test]
+fn parse_line_skips_blank_and_invalid_lines() {
+    assert!(claude::parse_line("").is_empty());
+    assert!(claude::parse_line("   ").is_empty());
+    assert!(claude::parse_line("not json at all").is_empty());
+
+    let line = r#"{"type":"result","subtype":"success","result":"OK","is_error":false}"#;
+    let events = claude::parse_line(line);
+    assert!(matches!(events.as_slice(), [ClaudeEvent::Result { .. }]));
+}
+
+#[test]
+fn result_is_failure_treats_error_subtype_as_failure() {
+    assert!(claude::result_is_failure(true, "success"));
+    assert!(claude::result_is_failure(false, "error_max_turns"));
+    assert!(claude::result_is_failure(false, "error_during_execution"));
+    assert!(!claude::result_is_failure(false, "success"));
+}
