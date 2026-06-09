@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Claude Subscription Proxy</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=EB+Garamond:wght@500&family=Inter:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+  <body>
+    <nav class="top-nav" aria-label="primary">
+      <a class="brand" href="#top">
+        <svg
+          class="brand-mark"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.4"
+          stroke-linecap="round"
+          aria-hidden="true"
+        >
+          <path d="M8 1v14" />
+          <path d="M1 8h14" />
+          <path d="M2.4 2.4l11.2 11.2" />
+          <path d="M13.6 2.4L2.4 13.6" />
+        </svg>
+        <span class="brand-name">Claude <span class="accent">·</span> Proxy</span>
+      </a>
+      <div class="nav-spacer"></div>
+      <div class="nav-status">
+        <span class="pill muted" id="server-pill">Loading</span>
+      </div>
+    </nav>
+
+    <main class="shell" id="top">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">Local LAN proxy · Subscription-backed</p>
+          <h1>Turn your Claude Code plan into an OpenAI &amp; Anthropic compatible API.</h1>
+          <p class="lede">
+            The proxy spawns the real <code>claude</code> CLI on every request, so traffic is
+            billed against your Pro / Max plan instead of metered API keys. Bind on
+            <code>0.0.0.0</code>, hand a proxy key to your other tools, and ship.
+          </p>
+        </div>
+      </section>
+
+      <section class="grid">
+        <article class="card featured" aria-labelledby="server-heading">
+          <div class="card-title">
+            <div>
+              <h2 id="server-heading">Server</h2>
+              <p>Local bind address and URL the proxy is reachable on.</p>
+            </div>
+            <span class="badge-coral">live</span>
+          </div>
+          <p class="url" id="server-url">http://0.0.0.0:8787</p>
+          <div class="actions">
+            <button id="start-server">Start</button>
+            <button id="stop-server" class="secondary">Stop</button>
+          </div>
+          <p id="server-error" class="error" role="alert"></p>
+        </article>
+
+        <article class="card" aria-labelledby="auth-heading">
+          <div class="card-title">
+            <div>
+              <h2 id="auth-heading">Claude auth</h2>
+              <p>Subscription status as reported by the CLI.</p>
+            </div>
+            <span id="auth-pill" class="pill muted">Loading</span>
+          </div>
+          <dl class="facts">
+            <div><dt>Account</dt><dd id="auth-account">Unknown</dd></div>
+            <div><dt>Plan</dt><dd id="auth-plan">Unknown</dd></div>
+          </dl>
+          <div class="actions">
+            <button id="open-login">Open login</button>
+            <button id="recheck-auth" class="secondary">Recheck</button>
+          </div>
+          <p id="auth-error" class="error" role="alert"></p>
+        </article>
+      </section>
+
+      <article class="card" aria-labelledby="keys-heading">
+        <div class="card-title">
+          <div>
+            <h2 id="keys-heading">API keys</h2>
+            <p>Issue and revoke keys that clients send as <code>Authorization: Bearer</code> or <code>x-api-key</code>.</p>
+          </div>
+          <button id="create-key">Create key</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Label</th>
+                <th>Prefix</th>
+                <th>Created</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="keys-body"></tbody>
+          </table>
+        </div>
+      </article>
+
+      <article class="card dark" aria-labelledby="config-heading">
+        <div class="card-title">
+          <div>
+            <h2 id="config-heading">Config</h2>
+            <p>Bind address, model mapping, concurrency. Stop the server before saving.</p>
+          </div>
+          <button id="save-config">Save</button>
+        </div>
+        <p id="config-hint" class="hint"></p>
+        <div class="form-grid">
+          <label>Bind address<input id="config-bind" /></label>
+          <label>Port<input id="config-port" type="number" min="1" max="65535" /></label>
+          <label>Claude binary<input id="config-claude-path" /></label>
+          <label>Default model<input id="config-default-model" /></label>
+          <label>Max concurrency<input id="config-concurrency" type="number" min="1" /></label>
+          <label>Timeout (seconds)<input id="config-timeout" type="number" min="1" /></label>
+          <label class="wide">Working dir<input id="config-working-dir" /></label>
+          <label class="check wide">
+            <input id="config-require-auth" type="checkbox" /> Require proxy API key on every request
+          </label>
+          <label class="wide">Model map<textarea id="config-model-map" rows="6" spellcheck="false"></textarea></label>
+        </div>
+        <p id="config-success" class="success"></p>
+        <p id="config-error" class="error" role="alert"></p>
+      </article>
+
+      <article class="card" aria-labelledby="logs-heading">
+        <div class="card-title">
+          <div>
+            <h2 id="logs-heading">Logs</h2>
+            <p>Live tail of the last 500 proxied requests.</p>
+          </div>
+        </div>
+        <div class="table-wrap logs">
+          <table>
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Method</th>
+                <th>Path</th>
+                <th>Model</th>
+                <th>Status</th>
+                <th>ms</th>
+                <th>Tokens</th>
+              </tr>
+            </thead>
+            <tbody id="logs-body"></tbody>
+          </table>
+        </div>
+      </article>
+
+      <section class="callout" aria-labelledby="callout-heading">
+        <h2 id="callout-heading">Ready to point a client at the proxy?</h2>
+        <p>
+          Set <code>base_url</code> to <code>http://&lt;host&gt;:8787/v1</code> and use a proxy
+          key as the OpenAI key, or hit <code>/v1/messages</code> with <code>x-api-key</code> for
+          the Anthropic shape. Requests stream SSE exactly like the upstream provider.
+        </p>
+        <div class="actions">
+          <button id="callout-copy">Copy usage snippet</button>
+        </div>
+      </section>
+
+      <footer class="footer">
+        <a class="brand" href="#top">
+          <svg
+            class="brand-mark"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.4"
+            stroke-linecap="round"
+            aria-hidden="true"
+          >
+            <path d="M8 1v14" />
+            <path d="M1 8h14" />
+            <path d="M2.4 2.4l11.2 11.2" />
+            <path d="M13.6 2.4L2.4 13.6" />
+          </svg>
+          <span class="brand-name">Anthropic · local bridge</span>
+        </a>
+        <p>Headless subscription calls draw from a separate monthly Agent SDK credit pool.</p>
+      </footer>
+    </main>
+
+    <dialog id="raw-key-dialog">
+      <h2>Copy this key now</h2>
+      <p>The raw proxy key will not be shown again.</p>
+      <pre id="raw-key"></pre>
+      <div class="actions">
+        <button id="copy-raw-key">Copy</button>
+        <button id="raw-key-close" class="secondary">Close</button>
+      </div>
+      <p id="raw-key-copy-status" class="success"></p>
+    </dialog>
+  </body>
+</html>
