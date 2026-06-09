@@ -34,3 +34,25 @@ fn uptime_is_floored_difference_in_seconds() {
     // never negative if clock skews backwards
     assert_eq!(uptime_secs(20_000, 10_000), 0);
 }
+
+#[tokio::test]
+async fn store_rate_limit_persists_and_returns_parsed_info() {
+    let slot = tokio::sync::Mutex::new(None);
+    let info = tauri_app_lib::server::state::store_rate_limit(
+        &slot,
+        None,
+        json!({ "rateLimitType": "five_hour", "resetsAt": 1781022000_i64 }),
+    )
+    .await;
+
+    assert_eq!(info.unwrap().rate_limit_type.as_deref(), Some("five_hour"));
+    assert!(slot.lock().await.is_some());
+}
+
+#[tokio::test]
+async fn store_rate_limit_ignores_non_object() {
+    let slot = tokio::sync::Mutex::new(None);
+    let info = tauri_app_lib::server::state::store_rate_limit(&slot, None, json!("nope")).await;
+    assert!(info.is_none());
+    assert!(slot.lock().await.is_none());
+}

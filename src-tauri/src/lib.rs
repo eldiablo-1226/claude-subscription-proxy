@@ -31,6 +31,7 @@ pub fn run() {
             commands::get_logs,
             commands::get_server_metrics,
             commands::get_subscription_limits,
+            commands::refresh_subscription_limits,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,5 +1,8 @@
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
+use tokio::sync::Semaphore;
 
 use crate::{
     claude_auth::{self, ClaudeAuthStatus},
@@ -7,7 +10,8 @@ use crate::{
     keys::KeyInfo,
     server::{
         self,
-        state::{AppState, RateLimitInfo, RequestLogEntry, ServerMetrics},
+        claude::{self, ClaudeRequest},
+        state::{self, AppState, RateLimitInfo, RequestLogEntry, ServerMetrics},
     },
 };
 
@@ -129,4 +133,32 @@ pub async fn get_server_metrics(state: State<'_, AppState>) -> Result<ServerMetr
 #[tauri::command]
 pub async fn get_subscription_limits(state: State<'_, AppState>) -> Result<Option<RateLimitInfo>, String> {
     Ok(state.rate_limit.lock().await.clone())
+}
+
+/// Run a minimal one-off `claude -p` turn purely to capture the current
+/// subscription rate-limit window, then store + broadcast it. Lets the UI show
+/// limits on demand without waiting for proxied client traffic.
+#[tauri::command]
+pub async fn refresh_subscription_limits(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<RateLimitInfo>, String> {
+    let config = Arc::new(state.config.lock().await.clone());
+    let model = config.default_model.clone();
+    let request = ClaudeRequest {
+        final_user_text: "hi".to_string(),
+        system_text: None,
+        history_stdin: String::new(),
+        mapped_model: model,
+        stream: false,
+    };
+
+    let completed = claude::collect(config, Arc::new(Semaphore::new(1)), request)
+        .await
+        .map_err(|err| err.client_message())?;
+
+    match completed.rate_limit {
+        Some(raw) => Ok(state::store_rate_limit(&state.rate_limit, Some(&app), raw).await),
+        None => Ok(state.rate_limit.lock().await.clone()),
+    }
 }

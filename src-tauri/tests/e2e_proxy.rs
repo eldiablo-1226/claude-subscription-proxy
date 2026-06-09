@@ -152,6 +152,12 @@ async fn e2e_openai_non_stream() {
     assert_eq!(body["choices"][0]["message"]["content"].as_str().unwrap().trim(), "OK");
     assert!(body["usage"]["completion_tokens"].as_u64().unwrap() > 0);
 
+    // The CLI's rate_limit_event must have been captured for the limits panel.
+    assert!(
+        server.state.rate_limit.lock().await.is_some(),
+        "expected a subscription rate-limit snapshot to be captured"
+    );
+
     server.cancel.cancel();
 }
 

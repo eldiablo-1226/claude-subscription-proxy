@@ -199,13 +199,7 @@ impl HttpState {
     }
 
     pub async fn set_rate_limit(&self, raw: Value) {
-        let Some(info) = RateLimitInfo::from_value(&raw) else {
-            return;
-        };
-        *self.rate_limit.lock().await = Some(info.clone());
-        if let Some(app) = &self.app {
-            let _ = app.emit("subscription_limits", info);
-        }
+        store_rate_limit(&self.rate_limit, self.app.as_ref(), raw).await;
     }
 
     fn metrics_snapshot(&self) -> ServerMetrics {
@@ -224,6 +218,22 @@ impl HttpState {
 
 fn string_field(value: &Value, key: &str) -> Option<String> {
     value.get(key).and_then(Value::as_str).map(ToOwned::to_owned)
+}
+
+/// Parse, persist, and broadcast a rate-limit snapshot. Shared by the request
+/// path (`HttpState::set_rate_limit`) and the on-demand probe command. Returns
+/// the parsed snapshot, or `None` when the value is not a rate-limit object.
+pub async fn store_rate_limit(
+    slot: &Mutex<Option<RateLimitInfo>>,
+    app: Option<&AppHandle>,
+    raw: Value,
+) -> Option<RateLimitInfo> {
+    let info = RateLimitInfo::from_value(&raw)?;
+    *slot.lock().await = Some(info.clone());
+    if let Some(app) = app {
+        let _ = app.emit("subscription_limits", info.clone());
+    }
+    Some(info)
 }
 
 pub fn epoch_millis() -> i64 {

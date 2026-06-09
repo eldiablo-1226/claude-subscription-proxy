@@ -106,7 +106,13 @@ function wireEvents() {
   $("#stop-server").addEventListener("click", () => void stopServer());
   $("#recheck-auth").addEventListener("click", () => void loadAuthStatus());
   $("#open-login").addEventListener("click", () => void startLogin());
-  $("#create-key").addEventListener("click", () => void createKey());
+  $("#create-key").addEventListener("click", openKeyDialog);
+  $("#key-cancel").addEventListener("click", () => $<HTMLDialogElement>("#key-dialog").close());
+  $("#key-create-confirm").addEventListener("click", () => void confirmCreateKey());
+  $("#key-label").addEventListener("keydown", (event) => {
+    if ((event as KeyboardEvent).key === "Enter") void confirmCreateKey();
+  });
+  $("#check-limits").addEventListener("click", () => void refreshLimits());
   $("#save-config").addEventListener("click", () => void saveConfig());
   $("#callout-copy").addEventListener("click", () => void copyUsageSnippet());
   $("#raw-key-close").addEventListener("click", () => $<HTMLDialogElement>("#raw-key-dialog").close());
@@ -249,16 +255,46 @@ function stopAuthPoll() {
   }
 }
 
-async function createKey() {
+function openKeyDialog() {
   setText("#keys-error", "");
-  const label = window.prompt("Label for this API key (e.g. 'laptop')");
-  if (!label?.trim()) return;
+  setText("#key-dialog-error", "");
+  const input = $<HTMLInputElement>("#key-label");
+  input.value = "";
+  $<HTMLDialogElement>("#key-dialog").showModal();
+  input.focus();
+}
+
+async function confirmCreateKey() {
+  const input = $<HTMLInputElement>("#key-label");
+  const label = input.value.trim();
+  if (!label) {
+    setText("#key-dialog-error", "Enter a label.");
+    input.focus();
+    return;
+  }
   try {
-    const created = await invoke<CreatedKey>("create_api_key", { label: label.trim() });
+    const created = await invoke<CreatedKey>("create_api_key", { label });
+    $<HTMLDialogElement>("#key-dialog").close();
     await loadKeys();
     showRawKey(created.raw_key);
   } catch (error) {
-    setText("#keys-error", `Failed to create key: ${error}`);
+    setText("#key-dialog-error", `Failed to create key: ${error}`);
+  }
+}
+
+async function refreshLimits() {
+  const button = $<HTMLButtonElement>("#check-limits");
+  button.disabled = true;
+  button.textContent = "Checking…";
+  setText("#limits-note", "Running a one-off Claude call to read the current limits…");
+  try {
+    limits = await invoke<RateLimitInfo | null>("refresh_subscription_limits");
+    renderLimits();
+  } catch (error) {
+    setText("#limits-note", `Could not read limits: ${error}`);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Check now";
   }
 }
 

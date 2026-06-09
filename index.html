@@ -90,7 +90,10 @@
             <div><dt>Resets</dt><dd id="limit-resets">—</dd></div>
             <div><dt>Overage</dt><dd id="limit-overage">—</dd></div>
           </dl>
-          <p id="limits-note" class="msg hint">No data yet — limits populate after the first proxied request.</p>
+          <div class="actions">
+            <button id="check-limits" class="secondary small">Check now</button>
+          </div>
+          <p id="limits-note" class="msg hint">No data yet — click “Check now” or proxy a request.</p>
         </article>
       </section>
 
@@ -169,6 +172,19 @@
         <p>Headless subscription calls draw from a separate monthly Agent SDK credit pool.</p>
       </footer>
     </main>
+
+    <dialog id="key-dialog">
+      <h2>Create API key</h2>
+      <p>Give the key a label so you can recognize it later.</p>
+      <label class="dialog-field">Label
+        <input id="key-label" autocomplete="off" spellcheck="false" placeholder="e.g. laptop" />
+      </label>
+      <p id="key-dialog-error" class="msg error"></p>
+      <div class="actions">
+        <button id="key-create-confirm">Create</button>
+        <button id="key-cancel" class="secondary">Cancel</button>
+      </div>
+    </dialog>
 
     <dialog id="raw-key-dialog">
       <h2>Copy this key now</h2>
