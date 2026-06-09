@@ -1,8 +1,8 @@
 [package]
 name = "tauri-app"
-version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+version = "1.0.0"
+description = "Local proxy exposing a Claude Code subscription as OpenAI- and Anthropic-compatible APIs"
+authors = ["eldiablo-1226"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

@@ -1,0 +1,79 @@
+name: release
+
+# Push a version tag to build and publish a cross-platform release:
+#   git tag v1.0.0 && git push origin v1.0.0
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: --target aarch64-apple-darwin
+            label: macOS (Apple Silicon)
+          - platform: macos-latest
+            args: --target x86_64-apple-darwin
+            label: macOS (Intel)
+          - platform: ubuntu-22.04
+            args: ''
+            label: Linux
+          - platform: windows-latest
+            args: ''
+            label: Windows
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # macOS runners build both arches; Linux/Windows use the host target.
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build and publish release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: Claude Subscription Proxy ${{ github.ref_name }}
+          releaseBody: |
+            Desktop builds for macOS (Apple Silicon + Intel), Windows, and Linux.
+
+            **Requires** Claude Code installed and `claude auth login` on a Pro/Max plan.
+
+            These binaries are **unsigned**:
+            - macOS: right-click the app → Open (or `xattr -dr com.apple.quarantine "Claude Subscription Proxy.app"`).
+            - Windows: SmartScreen → More info → Run anyway.
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}

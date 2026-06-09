@@ -1,6 +1,6 @@
 {
   "productName": "Claude Subscription Proxy",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "identifier": "dev.local.claude-subscription-proxy",
   "build": {
     "beforeDevCommand": "npm run dev",
